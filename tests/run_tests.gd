@@ -38,6 +38,15 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("wall_jump_away_from_wall_is_strong", _test_wall_jump_away_is_strong)
 	runner.register("wall_jump_neutral_is_weak_and_high", _test_wall_jump_neutral_is_weak_and_high)
 	runner.register("wall_detection_from_real_collision", _test_wall_detection_from_real_collision)
+	runner.register("dash_bound_to_left_shift_only", _test_dash_bound_to_left_shift_only)
+	runner.register("dash_exactly_12_frames_at_constant_speed_unaffected_by_gravity", _test_dash_duration_and_constant_speed)
+	runner.register("dash_refills_only_on_ground_or_wall_contact", _test_dash_refill_only_on_ground_or_wall_contact)
+	runner.register("double_jump_available_once_per_airborne_period", _test_double_jump_available_once_per_airborne_period)
+	runner.register("dash_direction_snapping", _test_dash_direction_snapping)
+	runner.register("dash_exit_velocity_retention_horizontal", _test_dash_exit_velocity_retention)
+	runner.register("dash_exit_zeroes_upward_vertical_velocity", _test_dash_exit_zeroes_upward_vertical_velocity)
+	runner.register("dash_cancels_on_wall_contact_and_refills", _test_dash_cancels_on_wall_contact_and_refills)
+	runner.register("dash_cooldown_blocks_second_dash_for_exactly_6_frames", _test_dash_cooldown_blocks_second_dash)
 
 func _default_config() -> MovementConfig:
 	return load("res://src/movement/default_movement_config.tres")
@@ -335,3 +344,215 @@ func _test_wall_detection_from_real_collision() -> String:
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
 
 	return Expect.is_true(history[-1].on_wall_right, "player pushing right into a real wall tile should register on_wall_right")
+
+## User confirmed dash = left Shift specifically, not either shift.
+## KEY_SHIFT alone doesn't distinguish sides - Godot 4's InputEventKey has
+## a separate `location` property (KeyLocation enum) for exactly this.
+## Proves the binding actually excludes right shift, not just that it
+## parses - synthesizes both InputEventKey variants and checks
+## InputMap.event_is_action() directly rather than trusting the resource
+## text alone.
+func _test_dash_bound_to_left_shift_only() -> String:
+	if not InputMap.has_action("dash"):
+		return "InputMap is missing action 'dash'"
+
+	var left_shift := InputEventKey.new()
+	left_shift.physical_keycode = KEY_SHIFT
+	left_shift.location = KeyLocation.KEY_LOCATION_LEFT
+
+	var right_shift := InputEventKey.new()
+	right_shift.physical_keycode = KEY_SHIFT
+	right_shift.location = KeyLocation.KEY_LOCATION_RIGHT
+
+	if not InputMap.event_is_action(left_shift, "dash", true):
+		return "left shift should match the 'dash' action"
+	if InputMap.event_is_action(right_shift, "dash", true):
+		return "right shift should NOT match the 'dash' action (must be left-shift only)"
+	return ""
+
+## The dash is active for exactly dash_duration_frames frames (returns
+## true from _apply_dash that many times). Exit-velocity retention is
+## applied within that same last active frame rather than a 13th frame
+## after it - simpler than deferring it across a frame boundary, and still
+## exactly 12 frames of the dash controlling velocity, per SPEC.md. So
+## frames 0..(duration-2) show fully undiminished speed, and the last
+## frame already reflects the retained value.
+func _test_dash_duration_and_constant_speed() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.dash_available = true
+
+	var frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
+	for i in range(15):
+		frames.append({})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	for i in range(config.dash_duration_frames - 1):
+		var failure := Expect.approx(history[i].velocity.x, config.dash_speed, "vx during dash at frame %d should stay at constant dash speed" % i)
+		if failure != "":
+			return failure
+		failure = Expect.approx(history[i].velocity.y, 0.0, "vy during dash at frame %d should be untouched by gravity" % i)
+		if failure != "":
+			return failure
+
+	var last_active := config.dash_duration_frames - 1
+	return Expect.approx(history[last_active].velocity.x, config.dash_speed * config.dash_exit_horizontal_retention, "vx on the dash's final active frame should already reflect exit retention")
+
+## _refill_abilities runs after _resolve_collision, using this frame's real
+## (post-resolution) on_floor - unlike most other wall/floor tests, it
+## can't be isolated by injecting the flag via InputPlayback, since
+## _resolve_collision would just overwrite that injection with whatever
+## the (empty, in that style of test) solid_tiles says. Needs real
+## geometry here instead.
+func _test_dash_refill_only_on_ground_or_wall_contact() -> String:
+	var config := _default_config()
+	var floor_row := 5
+	var solid_tiles := {Vector2i(0, floor_row): true}
+	var state := MovementState.new()
+	state.dash_available = false
+	state.position = Vector2(0, float(floor_row * config.tile_size) - 40.0)
+
+	var frames := InputPlayback.hold({}, 30)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	var landed_at := -1
+	for i in range(history.size()):
+		if history[i].on_floor:
+			landed_at = i
+			break
+	if landed_at <= 0:
+		return "test setup problem: player never landed (or landed immediately), can't check the mid-air/landed contrast"
+
+	var failure := Expect.is_false(history[landed_at - 1].dash_available, "dash should not be available while still airborne with no wall contact")
+	if failure != "":
+		return failure
+	return Expect.is_true(history[landed_at].dash_available, "dash should refill the moment it lands on the floor")
+
+## Isolated from real collision/coyote by seeding double_jump_available
+## directly and waiting out the ground-jump coyote window (6 frames)
+## before pressing, so only the double-jump path can explain a fire.
+func _test_double_jump_available_once_per_airborne_period() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.double_jump_available = true
+
+	var frames: Array[Dictionary] = [{"on_floor": true}]
+	for i in range(9):
+		frames.append({})
+	frames.append({"jump_pressed": true})
+	frames.append({"jump_pressed": false})
+	frames.append({"jump_pressed": true})
+	frames.append({"jump_pressed": false})
+
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var first_press_frame := 10
+	var failure := Expect.approx(history[first_press_frame].velocity.y, config.double_jump_velocity + config.gravity, "first mid-air jump press should fire the double jump")
+	if failure != "":
+		return failure
+
+	var second_press_frame := 12
+	return Expect.is_true(history[second_press_frame].velocity.y > config.double_jump_velocity + 1.0, "second mid-air jump press should NOT fire another double jump (already consumed this airborne period)")
+
+func _test_dash_direction_snapping() -> String:
+	var config := _default_config()
+
+	var s1 := MovementState.new()
+	s1.dash_available = true
+	var f1: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
+	var h1 := InputPlayback.run(s1, config, f1, PlayerMovement.process)
+	var failure := Expect.approx(h1[0].dash_direction.x, 1.0, "cardinal-right dash x")
+	if failure != "":
+		return failure
+	failure = Expect.approx(h1[0].dash_direction.y, 0.0, "cardinal-right dash y")
+	if failure != "":
+		return failure
+
+	var s2 := MovementState.new()
+	s2.dash_available = true
+	var f2: Array[Dictionary] = [{"dash_pressed": true, "move_right": true, "look_up": true}]
+	var h2 := InputPlayback.run(s2, config, f2, PlayerMovement.process)
+	var diag: float = sqrt(0.5)
+	failure = Expect.approx(h2[0].dash_direction.x, diag, "diagonal (right+up) dash x")
+	if failure != "":
+		return failure
+	failure = Expect.approx(h2[0].dash_direction.y, -diag, "diagonal (right+up) dash y")
+	if failure != "":
+		return failure
+
+	var s3 := MovementState.new()
+	s3.dash_available = true
+	s3.facing = -1.0
+	var f3: Array[Dictionary] = [{"dash_pressed": true}]
+	var h3 := InputPlayback.run(s3, config, f3, PlayerMovement.process)
+	return Expect.approx(h3[0].dash_direction.x, -1.0, "neutral-input dash should use current facing, not always right")
+
+func _test_dash_exit_velocity_retention() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.dash_available = true
+
+	var frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
+	for i in range(20):
+		frames.append({})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var exit_frame := config.dash_duration_frames - 1
+	var expected_vx: float = config.dash_speed * config.dash_exit_horizontal_retention
+	return Expect.approx(history[exit_frame].velocity.x, expected_vx, "vx right as a horizontal dash ends should retain dash_exit_horizontal_retention of dash speed")
+
+func _test_dash_exit_zeroes_upward_vertical_velocity() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.dash_available = true
+
+	var frames: Array[Dictionary] = [{"dash_pressed": true, "look_up": true}]
+	for i in range(20):
+		frames.append({})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var exit_frame := config.dash_duration_frames - 1
+	return Expect.approx(history[exit_frame].velocity.y, 0.0, "vertical velocity right as an upward dash ends should be zeroed")
+
+func _test_dash_cancels_on_wall_contact_and_refills() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.dash_available = true
+
+	var frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
+	frames.append({"on_wall_right": true})
+
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var failure := Expect.is_true(history[1].dash_available, "dash should refill immediately on wall-contact cancellation")
+	if failure != "":
+		return failure
+	return Expect.approx(float(history[1].timers.get("dash_timer", -1)), 0.0, "dash should have been cancelled (timer reset to 0) rather than continuing")
+
+func _test_dash_cooldown_blocks_second_dash() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.dash_available = true
+
+	var frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
+	for i in range(config.dash_duration_frames - 1):
+		frames.append({})
+	InputPlayback.run(state, config, frames, PlayerMovement.process)
+	# Re-grant the charge directly (it won't refill mid-air on its own) so
+	# only the separate cooldown gate is under test here.
+	state.dash_available = true
+
+	var post_frames: Array[Dictionary] = []
+	for i in range(config.dash_cooldown_frames):
+		post_frames.append({"dash_pressed": true, "move_right": true})
+	var post_history := InputPlayback.run(state, config, post_frames, PlayerMovement.process)
+
+	for i in range(config.dash_cooldown_frames):
+		var currently_dashing: bool = post_history[i].timers.get("dash_timer", 0) > 0
+		var failure := Expect.is_false(currently_dashing, "pressing dash during cooldown frame %d should not start a new dash" % i)
+		if failure != "":
+			return failure
+
+	var final_frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
+	var final_history := InputPlayback.run(state, config, final_frames, PlayerMovement.process)
+	return Expect.is_true(final_history[0].timers.get("dash_timer", 0) > 0, "dash should be available again exactly dash_cooldown_frames after the previous one ended")

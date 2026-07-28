@@ -50,6 +50,10 @@ if ($result.ExitCode -ne "0") {
   Write-Host "=== CAPTURE FAILED (exit $($result.ExitCode)) ==="
   exit 1
 }
+if (Select-String -Path $outFile, $errFile -Pattern "SCRIPT ERROR", "Parse Error" -Quiet -ErrorAction SilentlyContinue) {
+  Write-Host "=== SCRIPT ERRORS (screenshots may have been saved anyway - do not trust them) ==="
+  exit 1
+}
 
 Write-Host "=== OK ==="
 exit 0

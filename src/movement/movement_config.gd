@@ -28,6 +28,18 @@ extends Resource
 ## Max horizontal nudge (px) used to slip the player past a ledge corner
 ## instead of blocking a near-miss vertical collision.
 @export var corner_correction_px: float = 4.0
+@export var double_jump_velocity: float = -5.8
+
+@export_group("Dash")
+@export var dash_duration_frames: int = 12
+@export var dash_speed: float = 7.0
+## Frames after a dash ends before another can start, on top of needing
+## dash_available (refilled separately by ground/wall contact).
+@export var dash_cooldown_frames: int = 6
+## Fraction of dash speed kept on the horizontal axis when a dash ends
+## naturally (not cancelled by a wall). Vertical is zeroed instead if the
+## dash was moving upward, per SPEC.md section 4.
+@export var dash_exit_horizontal_retention: float = 0.6
 
 @export_group("Wall")
 @export var wall_slide_max_fall_speed: float = 1.5

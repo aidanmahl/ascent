@@ -1,92 +1,109 @@
 # Status
 
-## Done — Milestone 2: wall slide, cling, wall jump
+## Done — Milestone 3: double jump, dash
+- **Fixed a real visibility bug reported during play-testing**, ahead of
+  the milestone itself: the placeholder floor/walls existed only as
+  collision data, never rendered, so a human running the game saw the red
+  player and nothing else. Refactored world scaffolding out of
+  `scenes/player.gd` into a new `scenes/main.gd` (the player shouldn't own
+  world geometry — CLAUDE.md's "thin shell" rule), which now builds the
+  same solid-tile data plus a `ColorRect` per tile, and hands the
+  collision data to the player before its first `_physics_process`. Also
+  added a `Camera2D` as a child of the player (simple continuous-follow,
+  zoomed in 3x) — without it, half the scaffolding (anything left of
+  spawn) was entirely off-screen regardless of visuals, which is why
+  milestone 2's screenshot attempt came back blank. Verified with
+  `tools/screenshot.cmd`: floor and both walls now visible, camera tracks
+  the player settling onto the ground. This is still placeholder — SPEC.md
+  section 7 wants a per-room snap camera, which is level-framework
+  (milestone 7) territory — but continuous-follow is a reasonable stand-in
+  and a large improvement over nothing.
+- **Dash bound to left Shift specifically** (per your clarification, not
+  just "Shift" as SPEC.md section 3 states generically). Verified
+  `KEY_SHIFT` (4194325) and `KeyLocation.LEFT/RIGHT` (1/2) empirically
+  against this engine rather than guessed, since modifier keys aren't
+  ASCII-mapped like the letter keys used so far. The binding is checked
+  with a real test (`InputMap.event_is_action()` against synthesized
+  left- and right-shift events), not just eyeballed — right shift
+  confirmed to NOT trigger dash.
 - `src/movement/movement_config.gd`/`default_movement_config.tres`: added
-  the SPEC section 4 "Wall" values — `wall_slide_max_fall_speed` (1.5),
-  `wall_cling_frames` (12), `wall_jump_velocity` (4.0, -6.0, the strong
-  away-from-wall jump), `wall_jump_neutral_velocity` (3.0, -6.5, more
-  height/less distance), `wall_jump_lockout_frames` (8).
-- `src/movement/movement_state.gd`: added `on_wall_left`/`on_wall_right`
-  collision flags, same pattern as `on_floor`/`on_ceiling` — written by
-  the core, also directly injectable by tests.
-- `src/collision/tile_collision.gd`: the X-pass now reports which side a
-  horizontal collision happened on (moving left + collide → wall on the
-  left, etc.), so `on_wall_left`/`on_wall_right` come from the same real
-  geometry resolution as everything else, not a separate check.
+  `double_jump_velocity` (-5.8) and a new Dash group —
+  `dash_duration_frames` (12), `dash_speed` (7.0), `dash_cooldown_frames`
+  (6), `dash_exit_horizontal_retention` (0.6).
+- `src/movement/movement_state.gd`: `double_jump_available`/
+  `dash_available` (ability charges), `dash_pressed` (input edge),
+  `look_up`/`look_down` (W/S — SPEC.md ties these to camera look, not
+  implemented yet, but they're also needed for 8-way dash direction),
+  `dash_direction` (locked in per-dash), `facing` (last nonzero horizontal
+  input direction, for neutral-input dashes).
 - `src/movement/player_movement.gd`:
-  - `_apply_jump` now branches ground vs. wall jump (`can_wall_jump` =
-    touching a wall and not on a floor; only considered if a ground jump
-    didn't already fire). Direction and strength are resolved at fire
-    time: holding away from the touched wall gives the strong jump,
-    anything else (including holding back into the wall — SPEC.md doesn't
-    define this case, see "Surprised by") gives the neutral one.
-  - `_apply_run` skips input entirely while `wall_jump_lockout > 0` (read
-    directly off the timer `_apply_jump` already refreshed this same
-    frame), so the wall jump's velocity carries through unfought.
-  - `_apply_gravity` tracks `wall_contact`, consecutive frames of actively
-    pressing into a touched wall while airborne (resets to 0 the instant
-    either condition breaks, so letting go drops you immediately rather
-    than lagging a frame). First `wall_cling_frames` of contact: gravity's
-    acceleration is suspended entirely, so whatever vertical speed you
-    arrived with is preserved rather than reset to zero (see "Surprised
-    by" — SPEC.md's "zero gravity" is taken literally). After that, normal
-    gravity resumes but clamped to `wall_slide_max_fall_speed` instead of
-    `max_fall_speed`.
-- `tests/run_tests.gd`: 6 new tests — the SPEC section 10 lockout rule
-  (input has no authority for 8 frames after a wall jump), cling holds
-  velocity.y flat for exactly 12 frames then the slide cap takes over,
-  the slide cap clamps immediately even from a faster incoming fall,
-  strong vs. neutral wall jump velocities, and one test using real
-  `TileCollision` geometry (not injected flags) to prove
-  `on_wall_left`/`on_wall_right` actually get set in practice. 15/15 pass.
-- `scenes/player.gd`'s placeholder scaffolding now includes two wall
-  columns flanking the existing floor, so wall slide/cling/jump has
-  something to interact with once a human is testing interactively.
-- `tools/validate.cmd` passes, 15/15 tests green.
+  - `_apply_jump` gained a third priority tier: ground > wall > double
+    jump. `can_double_jump` requires airborne, not touching a wall, and
+    the charge available; consumed on fire, doesn't touch coyote/buffer.
+  - New `_apply_dash`, pre-empting jump/run/gravity entirely for every
+    frame it's active (see "Surprised by" — SPEC.md only explicitly zeroes
+    gravity, extending the lockout to jump/run too was a judgment call).
+    Direction is 8-way-snapped from held move/look, falling back to
+    `facing` when neutral. Cancels immediately on wall contact (refilling
+    the charge); otherwise ends after `dash_duration_frames` with exit
+    retention applied. `dash_cooldown` is checked before this frame's own
+    decrement (same reasoning as coyote/buffer in milestones 1-2) so it
+    blocks for exactly 6 frames, not 5.
+  - New `_refill_abilities`, run after collision resolution each frame:
+    on_floor or either on_wall flag refills both the double-jump and dash
+    charges.
+- `tests/run_tests.gd`: 11 new tests — all 3 SPEC section 10 rules for
+  this milestone (dash exactly 12 frames at constant 7.0 px/frame
+  unaffected by gravity, dash refills only on ground/wall contact, double
+  jump available once per airborne period), plus direction snapping
+  (cardinal/diagonal/neutral-facing), exit retention (horizontal and the
+  upward-zeroing case), wall-contact cancellation, and the cooldown
+  boundary. 24/24 pass.
+- `tools/screenshot.ps1` now checks for `SCRIPT ERROR`/`Parse Error` in
+  output the same way `validate.ps1` already did — it was reporting
+  `=== OK ===` and saving screenshots even while a scene was erroring
+  every physics frame (caught this for real: referenced `state.look_up`/
+  `dash_pressed` in `player.gd` before actually adding those fields to
+  `MovementState`, and the capture tool silently "succeeded" through it).
+- `tools/validate.cmd` passes, 24/24 tests green.
 
 ## Next
-- Milestone 3: double jump, dash. Then **milestone 4 is a hard stop** —
-  human tuning pass, no further milestones without approval.
+- **Milestone 4 is a hard stop: human tuning pass.** Do not proceed
+  without approval — this applies now.
 
 ## Surprised by / flagging
-- **"Zero gravity" during cling is taken literally as "gravity doesn't
-  accelerate," not "velocity.y resets to zero."** SPEC.md section 4 says
-  only "12 frames of zero gravity on first touch," nothing about resetting
-  velocity. So grabbing a wall while falling fast keeps that fall speed
-  constant (not accelerating further) for the cling window, then clamps
-  down to the slide cap once it ends — it does not "catch" you with a
-  snap to near-zero. If the intended feel is a hard catch, that's a
-  one-line change (zero `velocity.y` when `wall_contact` transitions from
-  0 to 1) — flagging rather than silently picking the snappier-feeling
-  interpretation.
-- **Pressing back into the wall (not away, not neutral) at wall-jump time
-  isn't defined by SPEC.md.** It only names two cases: away (strong) and
-  neutral/no-input (weak+high). Implemented so anything that isn't
-  "pressing away" — including holding into the wall — falls back to the
-  neutral jump. Reasonable default, but a real decision point if it feels
-  wrong in the milestone 4 tuning pass.
-- **Wall jump has no coyote-style grace window.** Ground jump gets coyote
-  time; wall jump requires actually touching the wall *this* frame
-  (`on_wall_left`/`on_wall_right` true right now). SPEC.md doesn't mention
-  wall coyote, so none was added — but it's a very Ori/Celeste-ish thing
-  to want later. Flagging rather than guessing.
-- **Tried to visually verify the new wall geometry with the screenshot
-  tool and it didn't work — but not because of a wall bug.** There is
-  still no `Camera2D` in `main.tscn` (flagged, not fixed, back in
-  milestone 1's status), so the viewport only ever shows raw world-space
-  from (0,0). The placeholder walls sit left of spawn, and scripting the
-  player to walk toward one just walked it further off the left edge of
-  frame — every captured screenshot was blank gray. The tool itself
-  worked fine (files saved, no errors); there was just nothing in frame
-  to capture. Camera framing is now clearly worth doing sooner than
-  milestone 7 if visual verification is going to keep being useful.
-- **The stale-flag-read ordering bug class predicted at the end of
-  milestone 1 did recur, in a milder form.** `_apply_gravity` reads
-  `state.on_wall_left`/`on_wall_right` before this frame's collision
-  resolution updates them (same pattern as `on_floor` in `_apply_jump`).
-  Unlike the coyote bug, this one turned out to be harmless here — being
-  one frame stale on wall contact for gravity purposes just means the
-  cling/slide state lags a single frame behind a wall touch/release,
-  which is unobservable at 60fps and doesn't compound the way the coyote
-  bug did — but it's the same shape of risk, worth double-checking by
-  hand again for milestone 3's dash (refill-on-wall-contact timing).
+- **Dash locks out jump and run, not just gravity.** SPEC.md section 4
+  only explicitly says "Gravity during dash: 0"; it doesn't say whether
+  jump or held movement input can interrupt a dash. Implemented as a full
+  lockout (simplest, most predictable — a dash fully owns velocity for its
+  duration) rather than letting a jump input cancel/combo out of a dash.
+  Worth confirming feel in the milestone 4 tuning pass.
+- **Exit-velocity retention lands on the dash's last active frame, not a
+  separate 13th frame after it.** SPEC.md lists "Duration: 12 frames" and
+  "Exit velocity retention" as separate rows, which could be read as 12
+  frames fully at speed *then* retention on the frame after. Implemented
+  the simpler version instead — retention is applied within the same call
+  that ends the dash (frames 0-10 fully at dash speed, frame 11 already
+  shows the retained value) — because deferring it a frame requires an
+  extra flag and, worse, lets gravity/friction apply *on top of* the
+  retained value that same frame before you can observe it cleanly. Traded
+  a strictly-literal 12-frames-then-retention reading for a implementation
+  that's simpler and has no observable seam. Flagging since it's a real
+  interpretation choice, not a bug.
+- **The stale-flag-read pattern flagged after milestones 1 and 2 showed up
+  a third time, and this time it directly broke a test** (not just a
+  theoretical risk): `_refill_abilities` runs *after* collision resolution
+  using fresh flags, so it's the first system in this codebase that
+  *can't* be tested by injecting `on_floor`/`on_wall_*` directly via
+  `InputPlayback` the way every other wall/floor test does — the injected
+  value gets silently overwritten by real (empty-geometry) collision
+  before `_refill_abilities` ever reads it. Cost real debugging time
+  before I recognized it as the same category of issue. Worth remembering
+  as a standing rule: anything reading collision flags *before*
+  `_resolve_collision` in the pipeline can be tested with injected flags;
+  anything reading them *after* needs real geometry.
+- **Camera2D added as a placeholder, ahead of the real per-room camera in
+  SPEC.md section 7 (milestone 7 territory).** Simple continuous-follow,
+  not the intended "snap per room" design. Flagging so it isn't mistaken
+  for the final camera behavior — expect to replace it, not extend it,
+  when level framework lands.

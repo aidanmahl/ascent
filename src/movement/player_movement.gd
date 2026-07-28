@@ -8,11 +8,20 @@ class_name PlayerMovement
 ## solid_tiles is a Dictionary[Vector2i, bool] of solid tile coordinates;
 ## pass {} for open-air scenarios (tests that only care about coyote/buffer/
 ## gravity, not collision).
+##
+## A dash fully pre-empts jump/run/gravity for every frame it's active.
+## SPEC.md only explicitly says gravity is 0 during a dash, but since dash
+## also overrides velocity directly (not via acceleration) and nothing in
+## SPEC.md describes jump-cancelling a dash, locking out all three for
+## simplicity/predictability is a judgment call - flagged in STATUS.md.
 static func process(state: MovementState, config: MovementConfig, solid_tiles: Dictionary = {}) -> void:
-	_apply_jump(state, config)
-	_apply_run(state, config)
-	_apply_gravity(state, config)
+	var dashing := _apply_dash(state, config)
+	if not dashing:
+		_apply_jump(state, config)
+		_apply_run(state, config)
+		_apply_gravity(state, config)
 	_resolve_collision(state, config, solid_tiles)
+	_refill_abilities(state)
 
 ## Jump decision reads timers BEFORE this frame's refresh, so the exact
 ## frame counts in SPEC.md section 10 (coyote: succeeds at 5 frames after
@@ -29,29 +38,34 @@ static func process(state: MovementState, config: MovementConfig, solid_tiles: D
 ## refresh coyote to full on its own launch frame and hand out a free extra
 ## jump.
 ##
-## Ground jump takes priority over wall jump when both are somehow
-## available (can_wall_jump already requires not on_floor, so this only
-## matters for the single frame a coyote-window ground jump and a wall
-## touch might coincide).
+## Priority: ground > wall > double jump. can_wall_jump already requires
+## not on_floor, and can_double_jump additionally requires not touching a
+## wall, so at most one of the three fires per frame.
 static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 	var coyote: int = state.timers.get("coyote", 0)
 	var jump_buffer: int = state.timers.get("jump_buffer", 0)
 
 	var can_ground_jump := state.on_floor or coyote > 0
 	var can_wall_jump := (state.on_wall_left or state.on_wall_right) and not state.on_floor
+	var can_double_jump := (not state.on_floor) and (not can_wall_jump) and state.double_jump_available
 	var wants_jump := state.jump_pressed or jump_buffer > 0
+
 	var fires_ground := can_ground_jump and wants_jump
 	var fires_wall := (not fires_ground) and can_wall_jump and wants_jump
+	var fires_double := (not fires_ground) and (not fires_wall) and can_double_jump and wants_jump
 
 	if fires_ground:
 		state.velocity.y = config.jump_velocity
 	elif fires_wall:
 		_fire_wall_jump(state, config)
+	elif fires_double:
+		state.velocity.y = config.double_jump_velocity
+		state.double_jump_available = false
 
 	if state.jump_released and state.velocity.y < 0.0:
 		state.velocity.y *= config.jump_cut_multiplier
 
-	var fires := fires_ground or fires_wall
+	var fires := fires_ground or fires_wall or fires_double
 
 	if fires:
 		coyote = 0
@@ -110,6 +124,7 @@ static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 	var friction := config.ground_friction if state.on_floor else config.air_friction
 
 	if input_dir != 0.0:
+		state.facing = input_dir
 		var target_speed := input_dir * config.max_run_speed
 		var opposing: bool = sign(state.velocity.x) != 0.0 and sign(state.velocity.x) != sign(input_dir)
 		var rate := accel * (config.turnaround_multiplier if opposing else 1.0)
@@ -149,6 +164,85 @@ static func _apply_gravity(state: MovementState, config: MovementConfig) -> void
 
 static func _is_pressing_into_wall(state: MovementState) -> bool:
 	return (state.on_wall_left and state.move_left) or (state.on_wall_right and state.move_right)
+
+## Returns true if a dash controlled this frame's velocity (start,
+## continuing, or the frame it ends on), so process() knows to skip
+## jump/run/gravity entirely for this frame.
+##
+## dash_cooldown gates a *new* dash and is checked before this frame's own
+## decrement (same read-before-refresh reasoning as coyote/buffer), so it
+## blocks for exactly dash_cooldown_frames after a dash ends, not one
+## fewer. dash_available is a separate charge (refilled by _refill_abilities
+## on ground/wall contact) - both must be satisfied to start a dash.
+##
+## `just_started` prevents the wall-cancel check from firing on the same
+## frame a dash begins (you can legitimately dash away from a wall you're
+## touching) and keeps duration at exactly dash_duration_frames regardless
+## of whether the timer set on the start frame gets decremented that same
+## frame or not - it does, uniformly, on every active frame including the
+## first.
+static func _apply_dash(state: MovementState, config: MovementConfig) -> bool:
+	var dash_timer: int = state.timers.get("dash_timer", 0)
+	var dash_cooldown: int = state.timers.get("dash_cooldown", 0)
+	var just_started := false
+
+	if dash_timer <= 0:
+		var can_start := state.dash_pressed and state.dash_available and dash_cooldown <= 0
+		if not can_start:
+			state.timers["dash_timer"] = 0
+			state.timers["dash_cooldown"] = maxi(dash_cooldown - 1, 0)
+			return false
+
+		state.dash_direction = _dash_direction(state)
+		state.velocity = state.dash_direction * config.dash_speed
+		state.dash_available = false
+		dash_timer = config.dash_duration_frames
+		just_started = true
+
+	dash_timer -= 1
+
+	var cancelled_by_wall := (not just_started) and (state.on_wall_left or state.on_wall_right)
+	var ending := cancelled_by_wall or dash_timer <= 0
+
+	if ending:
+		if cancelled_by_wall:
+			state.dash_available = true
+		else:
+			state.velocity.x *= config.dash_exit_horizontal_retention
+			if state.velocity.y < 0.0:
+				state.velocity.y = 0.0
+		dash_timer = 0
+		dash_cooldown = config.dash_cooldown_frames
+
+	state.timers["dash_timer"] = dash_timer
+	state.timers["dash_cooldown"] = dash_cooldown
+	return true
+
+## 8-way snap from held move/look directions; neutral input dashes in the
+## current facing direction instead.
+static func _dash_direction(state: MovementState) -> Vector2:
+	var dir := Vector2.ZERO
+	if state.move_left:
+		dir.x -= 1.0
+	if state.move_right:
+		dir.x += 1.0
+	if state.look_up:
+		dir.y -= 1.0
+	if state.look_down:
+		dir.y += 1.0
+	if dir == Vector2.ZERO:
+		dir.x = state.facing
+	return dir.normalized()
+
+## Double jump and dash both refill on ground OR wall contact per SPEC.md
+## section 4, using this frame's freshly-resolved collision flags (unlike
+## the jump/gravity reads above, which intentionally use last frame's
+## stale values - this runs after _resolve_collision, so there's no
+## staleness here).
+static func _refill_abilities(state: MovementState) -> void:
+	if state.on_floor or state.on_wall_left or state.on_wall_right:
+		state.double_jump_available = true
+		state.dash_available = true
 
 static func _resolve_collision(state: MovementState, config: MovementConfig, solid_tiles: Dictionary) -> void:
 	var result := TileCollision.resolve(state.position, state.velocity, config.collider_size, solid_tiles, config.tile_size, config.corner_correction_px)

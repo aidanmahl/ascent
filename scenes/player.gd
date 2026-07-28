@@ -5,33 +5,23 @@ class_name Player
 
 var state: MovementState = MovementState.new()
 
-## Placeholder scaffolding only: the real room/level framework (TileMapLayer-
-## backed) is milestone 7. This is just enough flat ground and a couple of
-## walls to stand on, cling to, and jump between for manual testing ahead
-## of milestone 4's human tuning gate - not the real level system.
-var _solid_tiles: Dictionary = {}
-
-func _ready() -> void:
-	_solid_tiles = _build_placeholder_geometry()
+## Solid tile data for the movement core's collision, provided by
+## whatever owns the world (main.gd's placeholder geometry for now,
+## the real level framework from milestone 7 on). Player doesn't build
+## its own world - see CLAUDE.md's "thin shell" rule.
+var solid_tiles: Dictionary = {}
 
 func _physics_process(_delta: float) -> void:
 	state.move_left = Input.is_action_pressed("move_left")
 	state.move_right = Input.is_action_pressed("move_right")
+	state.look_up = Input.is_action_pressed("look_up")
+	state.look_down = Input.is_action_pressed("look_down")
 	state.jump_pressed = Input.is_action_just_pressed("jump")
 	state.jump_released = Input.is_action_just_released("jump")
+	state.dash_pressed = Input.is_action_just_pressed("dash")
 	state.position = position
 
-	PlayerMovement.process(state, config, _solid_tiles)
+	PlayerMovement.process(state, config, solid_tiles)
 
 	position = state.position
 	velocity = state.velocity
-
-func _build_placeholder_geometry() -> Dictionary:
-	var tiles := {}
-	var floor_row := 10
-	for col in range(-20, 20):
-		tiles[Vector2i(col, floor_row)] = true
-	for row in range(4, floor_row):
-		tiles[Vector2i(-8, row)] = true
-		tiles[Vector2i(8, row)] = true
-	return tiles
