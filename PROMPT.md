@@ -1,92 +1,96 @@
-We are switching the build target to the browser. This is infrastructure
-work only. Do NOT create new milestones and do NOT advance the milestone
-plan — milestone 4 is still an unmet human-verification gate.
+Milestone 4 tuning iteration 1. This is a tuning pass, NOT a milestone
+advance. Do not start milestone 5. Do not add the gun, enemies, or combat.
 
-CRITICAL: Do not modify any movement code, movement tests, or values in
-MovementConfig. Milestone 4 tuning has not happened yet. If web support
-appears to require a movement change, stop and tell me instead of doing it.
+Do the movement fixes FIRST, then build the level geometry against the
+corrected values. Gravity is changing, which changes jump height and
+distance — geometry authored before the fix would be wrong.
 
-## 1. Web export
+## Bugs
 
-- Confirm web export templates for 4.7.1 are installed. If missing, stop
-  and tell me — I'll download them from the editor.
-- Create a Web export preset named exactly "Web".
-- Threads must be DISABLED. GitHub Pages cannot send the COOP/COEP headers
-  that SharedArrayBuffer requires. A threaded build will not run there.
-- Confirm the renderer is Compatibility. Do not change it if it is.
-- Export target directory is `docs/` with `index.html` as the entry point.
+### 1. Wall cling preserves upward velocity
+Jumping upward into a wall while holding toward it keeps my upward momentum
+after I cling. Clinging should arrest all vertical movement.
 
-## 2. Build script
+Suspected cause: the cling state zeroes gravity but does not zero
+velocity.y, so existing upward velocity persists through the cling window.
 
-Write `tools/build-web.cmd` (plus a `.ps1` if you need the timeout wrapper,
-same pattern as validate). It must:
-- Run `godot_console --headless --path . --export-release "Web" docs/index.html`
-- Use a 600 second timeout, NOT the 120s used by validate.cmd. Web exports
-  are slow, especially the first one, and a 120s kill would look like a
-  build failure.
-- Fail loudly with a nonzero exit if the export errors or if
-  docs/index.html, the .wasm, and the .pck are not all present afterward.
-- Create `docs/.nojekyll` (empty file) so GitHub Pages serves everything
-  verbatim.
+Fix: entering wall cling sets velocity.y = 0. Cling holds position; it does
+not preserve upwards momentum. Regular downwards wall-clinging gravity should still apply afterwards.
 
-Do NOT wire this into validate.cmd. Tests and builds stay separate.
+### 2. Jumping into a wall from the ground launches me far too high
+Holding toward a wall while jumping from the ground flings me straight up,
+well above normal jump height. It should be an ordinary jump that ends with
+me clinging to the wall.
 
-## 3. Web platform fixes
+Suspected cause: the jump buffer is not consumed by the ground jump, so when
+wall contact registers a frame or two later, the still-live buffered input
+immediately fires a neutral wall jump, stacking a second upward impulse.
 
-Only what is required for the current build to run in a browser:
-- A click-to-start overlay before the game begins. Browsers block audio
-  until a user gesture. This is required even though there is no audio yet.
-- Remove or guard anything that assumes a desktop environment: OS file
-  dialogs, absolute filesystem paths, external process calls, window
-  manipulation.
-- Do not implement saving yet. That is milestone 7.
+Investigate and confirm the actual cause before fixing. Do not patch the
+symptom. If it is the buffer, the fix is to consume the buffer on any
+successful jump and add a short lockout preventing a wall jump within a few
+frames of a ground jump.
 
-## 4. Git
+### 3. Gravity too strong
+Reduce gravity 10%: 0.45 -> 0.405.
 
-- `.gitignore` must NOT exclude `docs/`. The built game is committed
-  deliberately so GitHub Pages can serve it.
-- Commit the build output alongside source changes.
-- Push to origin/main.
+Report the resulting max jump height and max jump distance in pixels — the
+level validity constants depend on them. Leave max fall speed at 5.5 and
+tell me whether it should come down too.
 
-## 5. Verification
+### 4. Wall jumping away is frame-perfect
+Holding away from the wall releases the cling immediately, so jumping away
+requires direction and jump on the same frame.
 
-Be precise about what you can and cannot verify. You cannot play the game.
-Do not claim it is "playable" or "working."
+Add two MovementConfig parameters:
+- wall_detach_grace: frames of holding away before the cling actually
+  releases. Start at 8.
+- wall_coyote_time: frames after losing wall contact during which a wall
+  jump still fires. Start at 6.
 
-What you CAN verify, and must:
-- `tools\validate.cmd` still exits 0. The existing test suite must be
-  completely unaffected by this change.
-- The export completes and produces index.html, .wasm, .pck, and .js.
-- Serving `docs/` on a local HTTP server returns 200 for index.html and for
-  each of those assets.
-- Report the total size of `docs/`.
+During the detach grace the player stays attached and a wall jump remains
+available.
 
-Then report: the local URL you served it on, the file list with sizes, and
-an explicit statement of what remains unverified until I open it myself.
+## Test level geometry
 
-## 6. Update CLAUDE.md
+After the fixes land, extend the test level. It is currently too plain to
+exercise the moveset.
 
-Add a "Target platform" section: browser build, Compatibility renderer,
-no threads, audio requires user gesture, `user://` is async on web, no
-desktop-only APIs.
+This is a movement gym for tuning, NOT the sample level from SPEC section 9.
+Do not author the real level — that is milestone 10. Keep it functional and
+ugly. Placeholder tiles only. But, as the game name implies, the levels will be built upwards. Build a level 
+with sufficient vertical taversal for me to test. 
 
-Stop when validate is green, the build is committed and pushed, and you
-have reported the above.
+It must let me test, in isolation and in combination:
+- overhangs and ceilings I can hit and pass under
+- floating platforms that require a double jump to reach
+- gaps that require a dash, and gaps that require dash + jump
+- a vertical shaft requiring chained wall jumps
+- facing walls at several widths, for wall-to-wall climbing
+- a long flat run for top speed and stopping distance
 
-----
+Lay it out so I can reach every section without restarting.
 
-The web export preset writes to the project root (ascent.html, ascent.wasm,
-etc.) instead of docs/index.html as specified. GitHub Pages cannot serve
-that layout.
+## Requirements
 
-Fix export_presets.cfg so the Web preset exports to docs/index.html.
-Re-export, confirm docs/ contains index.html, .wasm, .pck, .js, and
-.nojekyll, and that no export artifacts remain in the project root.
+- Every bug above gets a permanent regression test in the input-playback
+  harness. These are exactly the cases it exists for.
+- All new values go in MovementConfig as exported fields. No magic numbers.
+- Update SPEC.md section 4 so its listed values match the config.
+- Do not change any movement value I did not ask you to change. If a fix
+  requires one, tell me rather than doing it.
 
-Also: tools/ contains a .cmd script using `2>nul` redirection, which
-creates a literal file named "nul" when invoked from PowerShell. Replace
-all `nul` redirects with a PowerShell-safe equivalent, or move the logic
-into the .ps1.
+## Workflow — this is now the standard loop
 
-Do not touch movement code or MovementConfig. Run validate.cmd, confirm
-it exits 0, commit, and push.
+1. Fix
+2. tools\validate.cmd exits 0
+3. Rebuild the web export to docs/
+4. Commit and push to origin/main
+5. Report what changed, and what I should specifically look for when testing
+
+Nothing is done until it is pushed. I test by refreshing the GitHub Pages
+link.
+
+
+After you are done with this, provide me a straightforward bullet point list of values I may want
+to tweak and test myself iteratively, and where those values live. 

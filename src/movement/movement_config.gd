@@ -15,7 +15,7 @@ extends Resource
 @export var turnaround_multiplier: float = 1.8
 
 @export_group("Gravity & Jump")
-@export var gravity: float = 0.45
+@export var gravity: float = 0.405
 @export var max_fall_speed: float = 5.5
 @export var jump_velocity: float = -6.5
 ## Velocity multiplier applied to an upward jump on early release.
@@ -54,6 +54,16 @@ extends Resource
 ## Frames after a wall jump during which horizontal input does not affect
 ## velocity.x, so the launch isn't immediately fought by held input.
 @export var wall_jump_lockout_frames: int = 8
+## Frames of holding away (or neutral) before cling actually releases -
+## the player stays attached (zero/capped gravity per the cling/slide
+## rules) and a wall jump remains available throughout. Without this,
+## letting go of "into the wall" drops attachment on the very next frame
+## (on_wall_* only reads true while still actively moving into the wall -
+## see TileCollision), making a wall-jump-away input frame-perfect.
+@export var wall_detach_grace: int = 8
+## Frames after actually losing wall contact during which a wall jump
+## still fires - the wall-contact analogue of coyote_frames.
+@export var wall_coyote_time: int = 6
 
 @export_group("Collider")
 @export var collider_size: Vector2 = Vector2(10, 16)

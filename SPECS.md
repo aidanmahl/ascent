@@ -69,7 +69,7 @@ them as the initial state of a knob, not as a requirement.
 ### Gravity & jump
 | Param | Value |
 |---|---|
-| Gravity | 0.45 px/frame² |
+| Gravity | 0.405 px/frame² (reduced 10% from 0.45 in milestone 4 tuning) |
 | Max fall speed | 5.5 px/frame |
 | Jump velocity | -6.5 px/frame |
 | Double jump velocity | -5.8 px/frame |
@@ -88,9 +88,18 @@ Double jump refills on ground contact and on wall contact.
 | Wall cling | 12 frames of zero gravity on first touch while holding toward wall |
 | Wall jump velocity | (±4.0, -6.0) |
 | Wall jump input lockout | 8 frames of no horizontal input authority |
+| Wall detach grace | 8 frames of holding away/neutral before cling actually releases |
+| Wall coyote time | 6 frames after losing wall contact during which a wall jump still fires |
 
 Wall jump away from the wall is the strong one. Neutral wall jump (no
 directional input) launches at (±3.0, -6.5) — more height, less distance.
+
+Entering a cling **arrests vertical velocity to 0**, up or down — it does not
+just freeze gravity's accumulation on whatever speed the player arrived with.
+(Milestone 4 tuning: the original "zero gravity" reading only suspended
+gravity, silently preserving an existing fall or an in-flight jump's upward
+speed for the whole cling window — the latter is what made jumping into a
+wall from the ground fling the player far above normal jump height.)
 
 **No stamina meter.** Wall hold is time-limited by the cling window, not by a
 draining resource. This is Ori, not Celeste.

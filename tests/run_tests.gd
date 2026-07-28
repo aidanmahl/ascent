@@ -47,6 +47,10 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("dash_exit_zeroes_upward_vertical_velocity", _test_dash_exit_zeroes_upward_vertical_velocity)
 	runner.register("dash_cancels_on_wall_contact_and_refills", _test_dash_cancels_on_wall_contact_and_refills)
 	runner.register("dash_cooldown_blocks_second_dash_for_exactly_6_frames", _test_dash_cooldown_blocks_second_dash)
+	runner.register("wall_cling_zeroes_velocity_on_entry", _test_wall_cling_zeroes_velocity_on_entry)
+	runner.register("ground_jump_into_wall_does_not_overshoot_height", _test_ground_jump_into_wall_does_not_overshoot_height)
+	runner.register("wall_detach_grace_keeps_cling_attached", _test_wall_detach_grace_keeps_cling_attached)
+	runner.register("wall_coyote_time_allows_late_wall_jump", _test_wall_coyote_time_allows_late_wall_jump)
 
 func _default_config() -> MovementConfig:
 	return load("res://src/movement/default_movement_config.tres")
@@ -268,9 +272,12 @@ func _test_wall_jump_lockout() -> String:
 
 	return Expect.is_true(history[8].velocity.x < launched_vx, "vx at frame 8 (lockout expired) should respond to the held opposing input")
 
-## First wall_cling_frames (12) frames of contact: velocity.y untouched by
-## gravity (SPEC.md section 4 says "zero gravity", taken literally - not a
-## reset to zero). After that, gravity resumes but clamped to
+## Cling arrests whatever vertical speed you arrived with (bug fix -
+## previously the "12 frames of zero gravity" reading only froze gravity's
+## *accumulation*, silently preserving an initial 3.0 px/frame fall for
+## the entire window instead of stopping it). velocity.y should snap to 0
+## on the entry frame and stay there for wall_cling_frames (12) frames of
+## contact; after that, gravity resumes but clamped to
 ## wall_slide_max_fall_speed.
 func _test_wall_cling_then_slide() -> String:
 	var config := _default_config()
@@ -281,7 +288,7 @@ func _test_wall_cling_then_slide() -> String:
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
 	for i in range(config.wall_cling_frames):
-		var failure := Expect.approx(history[i].velocity.y, 3.0, "vy during wall cling at frame %d (zero gravity expected)" % i)
+		var failure := Expect.approx(history[i].velocity.y, 0.0, "vy during wall cling at frame %d (arrested to 0, not the initial 3.0 fall speed)" % i)
 		if failure != "":
 			return failure
 
@@ -556,3 +563,133 @@ func _test_dash_cooldown_blocks_second_dash() -> String:
 	var final_frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
 	var final_history := InputPlayback.run(state, config, final_frames, PlayerMovement.process)
 	return Expect.is_true(final_history[0].timers.get("dash_timer", 0) > 0, "dash should be available again exactly dash_cooldown_frames after the previous one ended")
+
+## Milestone 4 tuning iteration 1, bug 1: entering a wall cling used to only
+## freeze gravity's *accumulation*, silently preserving whatever velocity.y
+## the player arrived with (up or down) for the whole wall_cling_frames
+## window. Seeds a strong upward velocity, injects wall contact, and checks
+## it's arrested to 0 on the very frame contact starts (not just held at
+## its prior value).
+func _test_wall_cling_zeroes_velocity_on_entry() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.velocity = Vector2(0, -6.5)
+
+	var frames := InputPlayback.hold({"on_wall_left": true, "move_left": true}, 3)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	return Expect.approx(history[0].velocity.y, 0.0, "vy on the first frame of wall contact should be arrested to 0, not left at the -6.5 it arrived with")
+
+## Milestone 4 tuning iteration 1, bug 2: jumping from the ground while
+## holding into a wall used to fling the player far above normal jump
+## height. Investigated the suspected cause (jump buffer surviving the
+## ground jump and re-firing a wall jump) and confirmed it wasn't that -
+## _apply_jump already zeroes jump_buffer the same frame any jump fires.
+## The real cause was the same bug as #1: wall cling preserved the jump's
+## still-strongly-upward velocity.y for up to wall_cling_frames more frames
+## instead of arresting it, which looked like a second, much bigger jump.
+## Fixing #1 fixes this too - this test locks in the visible symptom
+## (total rise) rather than the internal mechanism, against a real wall
+## placed flush against the player one pixel away, so contact registers
+## almost immediately after leaving the ground while still ascending fast.
+func _test_ground_jump_into_wall_does_not_overshoot_height() -> String:
+	var config := _default_config()
+
+	var baseline_history := _run_jump(config, 40, -1)
+	var baseline_peak := _peak_height(baseline_history)
+	var baseline_rise: float = 0.0 - baseline_peak
+
+	var floor_row := 10
+	var wall_col := 2
+	var solid_tiles: Dictionary = {}
+	for col in range(-5, wall_col):
+		solid_tiles[Vector2i(col, floor_row)] = true
+	for row in range(floor_row - 15, floor_row):
+		solid_tiles[Vector2i(wall_col, row)] = true
+
+	var state := MovementState.new()
+	# Right edge (x=32) flush against the wall's left face; collider
+	# half-width 5, resting on the floor (bottom edge at floor_row*16=160).
+	var start_y: float = float(floor_row * config.tile_size) - 8.0
+	state.position = Vector2(27, start_y)
+
+	var frames: Array[Dictionary] = [{"move_right": true, "jump_pressed": true, "on_floor": true}]
+	for i in range(39):
+		frames.append({"move_right": true, "jump_pressed": false})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	var touched_wall := false
+	for s in history:
+		if s.on_wall_right:
+			touched_wall = true
+			break
+	var setup_failure := Expect.is_true(touched_wall, "test setup problem: player never touched the wall while jumping toward it")
+	if setup_failure != "":
+		return setup_failure
+
+	var peak: float = _peak_height(history)
+	var rise: float = start_y - peak
+	return Expect.is_true(rise <= baseline_rise + 2.0, "rise while jumping into a wall (%s) should not exceed an ordinary jump's rise (%s)" % [rise, baseline_rise])
+
+## Milestone 4 tuning iteration 1, bug 4 (part 1): releasing "into the
+## wall" used to drop cling attachment on the very next frame (on_wall_*
+## only reads true while still actively moving into the wall - see
+## TileCollision - so letting go reads as leaving the wall instantly).
+## wall_detach_grace should keep the player attached (velocity.y held at
+## 0, per the cling fix above) for that many frames after release, then
+## let gravity resume on the frame after.
+func _test_wall_detach_grace_keeps_cling_attached() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+
+	var frames: Array[Dictionary] = [
+		{"on_wall_left": true, "move_left": true},
+		{"on_wall_left": true, "move_left": true},
+	]
+	for i in range(config.wall_detach_grace):
+		frames.append({"on_wall_left": false, "move_left": false})
+
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var last_grace_frame := 2 + config.wall_detach_grace - 1
+	var failure := Expect.approx(history[last_grace_frame].velocity.y, 0.0, "vy should still be held at 0 (attached) on the last frame of the detach grace window")
+	if failure != "":
+		return failure
+
+	var past_grace_frames: Array[Dictionary] = [{"on_wall_left": false, "move_left": false}]
+	var post_history := InputPlayback.run(state, config, past_grace_frames, PlayerMovement.process)
+	return Expect.is_true(post_history[0].velocity.y > 0.0, "vy one frame past the detach grace window should resume falling")
+
+## Milestone 4 tuning iteration 1, bug 4 (part 2): a wall jump used to
+## require actually touching the wall the exact frame jump is pressed.
+## wall_coyote_time gives a grace window after contact is lost (mirrors
+## ground coyote), keyed off last_wall_side to know which way is "away"
+## once on_wall_* has already gone false.
+func _test_wall_coyote_time_allows_late_wall_jump() -> String:
+	var config := _default_config()
+
+	var within := _run_wall_coyote_scenario(config, config.wall_coyote_time - 1)
+	var failure := Expect.is_true(within < -1.0, "wall jump should still fire a bit under wall_coyote_time frames after losing wall contact")
+	if failure != "":
+		return failure
+
+	var beyond := _run_wall_coyote_scenario(config, config.wall_coyote_time + 2)
+	return Expect.is_true(beyond > -1.0, "wall jump should NOT fire well beyond wall_coyote_time frames after losing wall contact")
+
+## call index 0 = last frame actually touching the wall. call index
+## (frames_after_losing_contact + 1) is where the press lands, mirroring
+## _run_coyote_scenario's indexing for the ground coyote test.
+func _run_wall_coyote_scenario(config: MovementConfig, frames_after_losing_contact: int) -> float:
+	var state := MovementState.new()
+	var press_at_call := frames_after_losing_contact + 1
+	var total_frames := press_at_call + 3
+
+	var base: Array[Dictionary] = [{"on_wall_left": true, "move_left": true}]
+	for i in range(total_frames - 1):
+		base.append({"on_wall_left": false, "move_left": false})
+
+	var jump_pulse := InputPlayback.pulse("jump_pressed", press_at_call, total_frames)
+	var frames := InputPlayback.merge(base, jump_pulse)
+
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+	return history[press_at_call].velocity.y

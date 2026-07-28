@@ -41,12 +41,26 @@ static func process(state: MovementState, config: MovementConfig, solid_tiles: D
 ## Priority: ground > wall > double jump. can_wall_jump already requires
 ## not on_floor, and can_double_jump additionally requires not touching a
 ## wall, so at most one of the three fires per frame.
+##
+## can_wall_jump extends past actual wall contact via wall_coyote (frames
+## since contact was last true, decremented like ground coyote) so a wall
+## jump isn't frame-perfect on the way out either. last_wall_side is
+## refreshed here (from this frame's stale-but-real on_wall_* reads,
+## before anything resets them) so _fire_wall_jump still knows which way
+## is "away" once on_wall_* itself has gone false during that window.
 static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 	var coyote: int = state.timers.get("coyote", 0)
 	var jump_buffer: int = state.timers.get("jump_buffer", 0)
+	var wall_coyote: int = state.timers.get("wall_coyote", 0)
 
+	if state.on_wall_left:
+		state.last_wall_side = -1.0
+	elif state.on_wall_right:
+		state.last_wall_side = 1.0
+
+	var touching_wall := state.on_wall_left or state.on_wall_right
 	var can_ground_jump := state.on_floor or coyote > 0
-	var can_wall_jump := (state.on_wall_left or state.on_wall_right) and not state.on_floor
+	var can_wall_jump := (touching_wall or wall_coyote > 0) and not state.on_floor
 	var can_double_jump := (not state.on_floor) and (not can_wall_jump) and state.double_jump_available
 	var wants_jump := state.jump_pressed or jump_buffer > 0
 
@@ -81,6 +95,13 @@ static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 	else:
 		jump_buffer = maxi(jump_buffer - 1, 0)
 
+	if fires_wall:
+		wall_coyote = 0
+	elif touching_wall:
+		wall_coyote = config.wall_coyote_time
+	else:
+		wall_coyote = maxi(wall_coyote - 1, 0)
+
 	var wall_jump_lockout: int = state.timers.get("wall_jump_lockout", 0)
 	if fires_wall:
 		wall_jump_lockout = config.wall_jump_lockout_frames
@@ -89,23 +110,29 @@ static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 
 	state.timers["coyote"] = coyote
 	state.timers["jump_buffer"] = jump_buffer
+	state.timers["wall_coyote"] = wall_coyote
 	state.timers["wall_jump_lockout"] = wall_jump_lockout
 
 ## Away-from-wall (holding the opposite direction) is the strong jump;
 ## anything else - including holding back into the wall, which SPEC.md
 ## doesn't call out as its own case - falls back to the neutral one.
+## Uses last_wall_side rather than on_wall_left/right directly so this
+## still resolves correctly during the wall_coyote window, once on_wall_*
+## has already gone false.
 static func _fire_wall_jump(state: MovementState, config: MovementConfig) -> void:
-	var away_dir: float
-	var pressing_away: bool
-	if state.on_wall_left:
-		away_dir = 1.0
-		pressing_away = state.move_right
-	else:
-		away_dir = -1.0
-		pressing_away = state.move_left
+	var wall_side := _current_wall_side(state)
+	var away_dir := -wall_side
+	var pressing_away := state.move_right if wall_side < 0.0 else state.move_left
 
 	var launch := config.wall_jump_velocity if pressing_away else config.wall_jump_neutral_velocity
 	state.velocity = Vector2(away_dir * launch.x, launch.y)
+
+static func _current_wall_side(state: MovementState) -> float:
+	if state.on_wall_left:
+		return -1.0
+	if state.on_wall_right:
+		return 1.0
+	return state.last_wall_side
 
 static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 	# The wall jump's imparted velocity.x is meant to carry through
@@ -137,29 +164,48 @@ static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 ## re-detect on_floor every single frame at rest, rather than only on the
 ## frame contact first happens.
 ##
-## wall_contact counts consecutive frames of actively pressing into a
-## touched wall while airborne (reset to 0 the instant either condition
-## isn't true, so letting go of the direction drops you immediately rather
-## than lagging a frame). The first wall_cling_frames of contact are zero
-## gravity per SPEC.md section 4 ("12 frames of zero gravity on first
-## touch") - read literally, that only suspends gravity's acceleration, so
-## whatever vertical speed you arrived with is preserved, not reset to
-## zero. After that window, gravity resumes but clamped to
-## wall_slide_max_fall_speed instead of the normal max_fall_speed.
+## wall_detach tracks frames since _is_pressing_into_wall was last true
+## (0 = pressing into it right now). "attached" stays true through
+## wall_detach_grace frames of not pressing in - without this, letting go
+## drops attachment on the very next frame (on_wall_* only reads true
+## while still actively moving into the wall - see TileCollision), making
+## a wall-jump-away input frame-perfect. wall_detach starts at
+## wall_detach_grace + 1 (already-expired) so a player who has never
+## touched a wall isn't spuriously "attached" from the field's zero
+## default.
+##
+## wall_contact counts consecutive attached frames, used only to know
+## when the cling window ends. entering_cling (attached, and this is the
+## first attached frame) zeroes velocity.y - clinging arrests whatever
+## vertical speed you arrived with (bug: it used to preserve it, so
+## jumping into a wall mid-ascent kept rising at full speed for up to
+## wall_cling_frames more frames). After the wall_cling_frames window,
+## gravity resumes but clamped to wall_slide_max_fall_speed instead of
+## the normal max_fall_speed, for as long as still attached.
 static func _apply_gravity(state: MovementState, config: MovementConfig) -> void:
-	var wall_active := _is_pressing_into_wall(state) and not state.on_floor
+	var pressing_into := _is_pressing_into_wall(state)
+	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
+	wall_detach = 0 if pressing_into else (wall_detach + 1)
+	state.timers["wall_detach"] = wall_detach
+
+	var attached := (not state.on_floor) and wall_detach <= config.wall_detach_grace
+
 	var wall_contact: int = state.timers.get("wall_contact", 0)
-	wall_contact = (wall_contact + 1) if wall_active else 0
+	var entering_cling := attached and wall_contact == 0
+	wall_contact = (wall_contact + 1) if attached else 0
 	state.timers["wall_contact"] = wall_contact
 
-	var clinging := wall_active and wall_contact <= config.wall_cling_frames
+	if entering_cling:
+		state.velocity.y = 0.0
+
+	var clinging := attached and wall_contact <= config.wall_cling_frames
 	if clinging:
 		return
 
 	var g := config.gravity
 	if absf(state.velocity.y) < config.apex_hang_threshold:
 		g *= config.apex_hang_gravity_multiplier
-	var fall_cap := config.wall_slide_max_fall_speed if wall_active else config.max_fall_speed
+	var fall_cap := config.wall_slide_max_fall_speed if attached else config.max_fall_speed
 	state.velocity.y = minf(state.velocity.y + g, fall_cap)
 
 static func _is_pressing_into_wall(state: MovementState) -> bool:

@@ -37,6 +37,12 @@ var dash_direction: Vector2 = Vector2.ZERO
 ## input dash's direction. Defaults to facing right.
 var facing: float = 1.0
 
+## Which wall was last actually touched (-1 = left, +1 = right). Needed
+## because a wall jump can fire during wall_coyote_time after on_wall_*
+## has already gone false - _fire_wall_jump still needs to know which
+## direction is "away".
+var last_wall_side: float = 0.0
+
 var timers: Dictionary = {}
 
 func clone() -> MovementState:
@@ -58,5 +64,6 @@ func clone() -> MovementState:
 	copy.dash_available = dash_available
 	copy.dash_direction = dash_direction
 	copy.facing = facing
+	copy.last_wall_side = last_wall_side
 	copy.timers = timers.duplicate()
 	return copy
