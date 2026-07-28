@@ -62,9 +62,9 @@ them as the initial state of a knob, not as a requirement.
 | Param | Value |
 |---|---|
 | Max run speed | 2.125 px/frame (reduced 15% from 2.5 in milestone 4 tuning) |
-| Ground acceleration | 0.2125 px/frame² (reduced 15% from 0.25) |
+| Ground acceleration | 0.10625 px/frame² (reduced 15% then 50% more from 0.25) |
 | Ground friction | 0.40 px/frame² |
-| Air acceleration | 0.153 px/frame² (reduced 15% from 0.18) |
+| Air acceleration | 0.0765 px/frame² (reduced 15% then 50% more from 0.18) |
 | Air friction | 0.10 px/frame² |
 | Turnaround multiplier | 1.8× accel when input opposes velocity |
 
@@ -95,12 +95,17 @@ too). Replaced by `collision_width_margin_px` under Collider, below.
 | Wall cling | 13 frames of zero gravity on first touch while holding toward wall |
 | Wall jump velocity | (±4.0, -6.0) |
 | Wall jump input lockout | 8 frames of no horizontal input authority |
-| Wall detach grace | 8 frames of holding away/neutral before cling actually releases |
+| Wall detach grace | 14 frames of holding away/neutral before cling actually releases (increased 75% from 8 in milestone 4 tuning) |
 | Wall coyote time | 6 frames after losing wall contact during which a wall jump still fires |
 | Wall cling entry speed cap | 4.0 px/frame max magnitude of velocity.y carried into a cling while falling or at rest |
 
 Wall jump away from the wall is the strong one. Neutral wall jump (no
-directional input) launches at (±3.0, -6.5) — more height, less distance.
+directional input) launches at (±3.0, -6.5) — more height, less distance. A
+wall jump remains available for the *entire* `wall_detach_grace` window, not
+just `wall_coyote_time` after losing contact — `wall_detach_grace` is now
+longer than `wall_coyote_time`, so without this a jump pressed late in grace
+used to silently fall through to a double jump instead, burning a charge it
+shouldn't have touched.
 
 **While attached to a wall and still rising (velocity.y < 0), gravity behaves
 exactly as it would off the wall** — normal decay, no freeze. The wall only
@@ -119,6 +124,21 @@ arresting it — bounded the overshoot but didn't address why it happened.
 Third, this version: don't freeze rising velocity at all. Since it decays
 naturally the same as off-wall, there's nothing left to bound for the rising
 case — the entry cap now only matters for a genuinely fast downward catch.)
+
+**The cling window (`wall_cling_frames`) is a total attachment-duration
+budget, not a grant reset when rising stops** (milestone 4 tuning iteration
+4). It starts counting the moment a wall is first touched, including while
+still rising. A long attached ascent (touching a wall early in a jump, well
+before its natural apex) will have already spent the budget by the time it
+stops rising, so gravity resumes immediately — a normal transition into
+falling. Without this, the budget reset fresh at the exact instant rising
+stopped, freezing at whatever near-zero velocity was there right at the apex
+for the whole window — a jarring pause. Grabbing a wall already at or near
+rest still gets a hold for whatever budget remains, same as before. Since
+`wall_detach_grace` (14) is now longer than `wall_cling_frames` (13), the
+cling (zero-gravity) portion can run out before grace itself does — from
+that point the player is still attached (wall-slide-capped falling, wall jump
+still available) for the remainder of grace, just no longer frozen.
 
 During `wall_detach_grace`, horizontal movement is pinned (velocity.x zeroed,
 input has no authority) — a commitment window, not a slow release. Vertical

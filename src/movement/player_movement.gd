@@ -77,16 +77,24 @@ static func _update_wall_attachment(state: MovementState, config: MovementConfig
 ## not on_floor, and can_double_jump additionally requires not touching a
 ## wall, so at most one of the three fires per frame.
 ##
-## can_wall_jump extends past actual wall contact via wall_coyote (frames
-## since contact was last true, decremented like ground coyote) so a wall
-## jump isn't frame-perfect on the way out either. last_wall_side is
-## refreshed here (from this frame's stale-but-real on_wall_* reads,
-## before anything resets them) so _fire_wall_jump still knows which way
-## is "away" once on_wall_* itself has gone false during that window.
+## can_wall_jump extends past actual wall contact two ways: wall_coyote
+## (frames since contact was last true, decremented like ground coyote -
+## for after actually leaving the wall's vicinity) and wall_detach_grace
+## (still "attached" per _update_wall_attachment, whether or not currently
+## pressing in - matches the documented "a wall jump remains available"
+## promise for the whole grace window). Without the grace term, a jump
+## pressed late in a long grace window - now that grace outlasts
+## wall_coyote - would fall through to a double jump instead of firing a
+## proper (away/neutral) wall jump, silently burning a charge it
+## shouldn't. last_wall_side is refreshed here (from this frame's
+## stale-but-real on_wall_* reads, before anything resets them) so
+## _fire_wall_jump still knows which way is "away" once on_wall_* itself
+## has gone false during either window.
 static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 	var coyote: int = state.timers.get("coyote", 0)
 	var jump_buffer: int = state.timers.get("jump_buffer", 0)
 	var wall_coyote: int = state.timers.get("wall_coyote", 0)
+	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
 
 	if state.on_wall_left:
 		state.last_wall_side = -1.0
@@ -94,8 +102,9 @@ static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 		state.last_wall_side = 1.0
 
 	var touching_wall := state.on_wall_left or state.on_wall_right
+	var attached_via_grace := wall_detach <= config.wall_detach_grace
 	var can_ground_jump := state.on_floor or coyote > 0
-	var can_wall_jump := (touching_wall or wall_coyote > 0) and not state.on_floor
+	var can_wall_jump := (touching_wall or wall_coyote > 0 or attached_via_grace) and not state.on_floor
 	var can_double_jump := (not state.on_floor) and (not can_wall_jump) and state.double_jump_available
 	var wants_jump := state.jump_pressed or jump_buffer > 0
 
@@ -218,7 +227,7 @@ static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 ## when the cling window ends.
 ##
 ## Milestone 4 tuning iteration 2 went through two attempts at "cling
-## preserves velocity" before landing here:
+## preserves velocity" before landing on "no freeze while rising":
 ## - First: preserve entry velocity outright (up or down). Reopened the
 ##   superjump - freezing a still-decelerating upward velocity for the
 ##   whole zero-gravity cling window adds height a naturally-decaying jump
@@ -228,36 +237,43 @@ static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 ##   overshoot but didn't address the actual mechanism - freezing ANY
 ##   still-decaying velocity, capped or not, still suspends the
 ##   deceleration a normal jump would have had.
-## - This version: while attached AND still rising (velocity.y < 0),
-##   gravity behaves exactly as it would off the wall - normal decay, no
-##   freeze, no cap, wall_contact held at 0 so the cling window hasn't
-##   started yet. The wall only "catches" you once you actually stop
-##   rising: cling (zero gravity, entry speed clamped to
-##   wall_cling_entry_speed_cap) kicks in from that point, then the usual
-##   wall_slide_max_fall_speed cap once wall_cling_frames elapses. Since a
-##   still-rising player entering this transition has already decayed
-##   toward 0 under normal gravity, the entry cap now only matters for a
-##   genuinely fast downward catch (grabbing a wall mid-fall) - it was
-##   never the rising case that needed bounding, once rising isn't frozen
-##   at all.
+## - Third: while attached AND still rising (velocity.y < 0), gravity
+##   behaves exactly as it would off the wall - normal decay, no freeze,
+##   no cap.
+##
+## Iteration 4 fixes a side effect of that third version: wall_contact was
+## reset to 0 every rising frame, so the instant velocity crossed to >= 0
+## it always looked like a *fresh* cling entry - freezing at whatever
+## near-zero value it had right at that crossing for the *entire*
+## wall_cling_frames window. That read as a jarring pause/hitch right at
+## the top of a jump instead of a normal continuation into falling.
+##
+## Fix: wall_contact now counts every attached frame from the moment
+## attachment begins, including the rising phase - the cling window is a
+## total attachment-duration budget, not a grant reset at the sign
+## change. A long attached ascent (touching a wall early in a jump, well
+## before its natural apex - the common case, e.g. climbing the wall-jump
+## shaft) will have already spent that budget by the time it stops rising,
+## so gravity resumes immediately with no pause. Grabbing a wall already
+## at or very near rest still gets a short hold for whatever budget is
+## left, same as it always has for a genuine "catch my fall" grab.
 static func _apply_gravity(state: MovementState, config: MovementConfig) -> void:
 	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
 	var attached := (not state.on_floor) and wall_detach <= config.wall_detach_grace
 
+	var wall_contact: int = state.timers.get("wall_contact", 0)
+	var first_attached_frame := attached and wall_contact == 0
+	wall_contact = (wall_contact + 1) if attached else 0
+	state.timers["wall_contact"] = wall_contact
+
 	if attached and state.velocity.y < 0.0:
-		state.timers["wall_contact"] = 0
 		var g_rising := config.gravity
 		if absf(state.velocity.y) < config.apex_hang_threshold:
 			g_rising *= config.apex_hang_gravity_multiplier
 		state.velocity.y = minf(state.velocity.y + g_rising, config.max_fall_speed)
 		return
 
-	var wall_contact: int = state.timers.get("wall_contact", 0)
-	var entering_cling := attached and wall_contact == 0
-	wall_contact = (wall_contact + 1) if attached else 0
-	state.timers["wall_contact"] = wall_contact
-
-	if entering_cling:
+	if first_attached_frame:
 		state.velocity.y = clampf(state.velocity.y, -config.wall_cling_entry_speed_cap, config.wall_cling_entry_speed_cap)
 
 	var clinging := attached and wall_contact <= config.wall_cling_frames

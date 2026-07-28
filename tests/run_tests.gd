@@ -50,12 +50,14 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("dash_cancels_on_wall_contact_and_refills", _test_dash_cancels_on_wall_contact_and_refills)
 	runner.register("dash_cooldown_blocks_second_dash_for_exactly_6_frames", _test_dash_cooldown_blocks_second_dash)
 	runner.register("wall_cling_no_freeze_while_rising", _test_wall_cling_no_freeze_while_rising)
-	runner.register("wall_cling_starts_once_rising_stops", _test_wall_cling_starts_once_rising_stops)
+	runner.register("wall_cling_holds_remaining_budget_near_apex", _test_wall_cling_holds_remaining_budget_near_apex)
+	runner.register("wall_cling_no_pause_after_long_attached_ascent", _test_wall_cling_no_pause_after_long_attached_ascent)
 	runner.register("wall_cling_preserves_slow_entry_uncapped", _test_wall_cling_preserves_slow_entry_uncapped)
 	runner.register("ground_jump_into_wall_does_not_overshoot_height", _test_ground_jump_into_wall_does_not_overshoot_height)
 	runner.register("wall_detach_grace_keeps_cling_attached", _test_wall_detach_grace_keeps_cling_attached)
 	runner.register("wall_coyote_time_allows_late_wall_jump", _test_wall_coyote_time_allows_late_wall_jump)
 	runner.register("wall_detach_grace_locks_horizontal_movement", _test_wall_detach_grace_locks_horizontal_movement)
+	runner.register("wall_jump_during_late_grace_does_not_burn_double_jump", _test_wall_jump_during_late_grace_does_not_burn_double_jump)
 	runner.register("reset_clears_state_and_returns_to_spawn", _test_reset_clears_state_and_returns_to_spawn)
 
 func _default_config() -> MovementConfig:
@@ -650,10 +652,15 @@ func _test_wall_cling_no_freeze_while_rising() -> String:
 			return failure
 	return ""
 
-## Once a rising player actually stops ascending (vy crosses to >= 0) while
-## still attached, cling should catch them there - velocity.y held
-## constant for wall_cling_frames frames, same as any other cling entry.
-func _test_wall_cling_starts_once_rising_stops() -> String:
+## Milestone 4 tuning iteration 4: wall_contact now counts every attached
+## frame from the moment attachment begins, including while still rising -
+## the cling window is a total attachment-duration budget, not a fresh
+## grant reset at the exact instant rising stops (see _apply_gravity).
+## Grabbing a wall already very close to its natural apex (barely any
+## attached-rising time to spend down the budget first) should still get
+## a hold for whatever budget remains - shorter than a full
+## wall_cling_frames window, not the full window every time.
+func _test_wall_cling_holds_remaining_budget_near_apex() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
 	state.velocity = Vector2(0, -1.0)
@@ -671,11 +678,43 @@ func _test_wall_cling_starts_once_rising_stops() -> String:
 		return setup_failure
 
 	var held_value: float = history[apex_frame].velocity.y
-	for i in range(apex_frame, mini(apex_frame + config.wall_cling_frames, history.size())):
-		var failure := Expect.approx(history[i].velocity.y, held_value, "vy should stay held at %s once cling starts (frame %d)" % [held_value, i])
+	var i := apex_frame
+	while i < history.size() and history[i].timers.get("wall_contact", 0) <= config.wall_cling_frames:
+		var failure := Expect.approx(history[i].velocity.y, held_value, "vy should stay held at %s while the attachment-duration cling budget hasn't run out (frame %d)" % [held_value, i])
 		if failure != "":
 			return failure
-	return ""
+		i += 1
+	var post_failure := Expect.is_true(i < history.size(), "test setup problem: cling budget should have run out within the 30-frame window")
+	if post_failure != "":
+		return post_failure
+	return Expect.is_true(history[i].velocity.y > held_value, "vy should resume increasing once the remaining cling budget runs out")
+
+## The bug this fixes: a jump touching a wall early in its ascent (well
+## before its natural apex - the common case, e.g. climbing the wall-jump
+## shaft) used to freeze at whatever near-zero vy it had right at the
+## apex for the *entire* wall_cling_frames window, a jarring pause instead
+## of a normal transition into falling. A full jump's worth of attached-
+## rising time (~18 frames) comfortably exceeds wall_cling_frames (13), so
+## the budget should already be spent by the time it naturally stops
+## rising - gravity should resume immediately, not freeze.
+func _test_wall_cling_no_pause_after_long_attached_ascent() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.velocity = Vector2(0, -6.5)
+
+	var frames := InputPlayback.hold({"on_wall_left": true, "move_left": true}, 30)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var apex_frame := -1
+	for i in range(history.size()):
+		if history[i].velocity.y >= 0.0:
+			apex_frame = i
+			break
+	var setup_failure := Expect.is_true(apex_frame >= 0 and apex_frame + 1 < history.size(), "test setup problem: player should reach apex with room for one more frame within 30 frames")
+	if setup_failure != "":
+		return setup_failure
+
+	return Expect.is_true(history[apex_frame + 1].velocity.y > history[apex_frame].velocity.y, "after a long attached ascent (cling budget already spent before apex), vy should keep changing normally right after apex, not freeze")
 
 ## Entry speeds under wall_cling_entry_speed_cap should pass through
 ## untouched - the cap only clips fast entries, it doesn't replace normal
@@ -753,9 +792,17 @@ func _test_ground_jump_into_wall_does_not_overshoot_height() -> String:
 ## wall" used to drop cling attachment on the very next frame (on_wall_*
 ## only reads true while still actively moving into the wall - see
 ## TileCollision - so letting go reads as leaving the wall instantly).
-## wall_detach_grace should keep the player attached (velocity.y held at
-## 0, per the cling fix above) for that many frames after release, then
-## let gravity resume on the frame after.
+## wall_detach_grace should keep the player attached for that many frames
+## after release before gravity fully unattaches.
+##
+## Milestone 4 tuning iteration 4: wall_detach_grace (14) is now longer
+## than wall_cling_frames (13), so "attached" and "clinging" (zero
+## gravity) are no longer the same duration - the cling budget (see
+## _apply_gravity) can run out before grace itself expires. So this now
+## checks three phases instead of "held at 0 for the whole grace window":
+## held at 0 while the cling budget lasts, capped at
+## wall_slide_max_fall_speed for the rest of grace (still attached, just
+## past the zero-gravity portion), then uncapped once grace fully expires.
 func _test_wall_detach_grace_keeps_cling_attached() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
@@ -769,20 +816,36 @@ func _test_wall_detach_grace_keeps_cling_attached() -> String:
 
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
-	var last_grace_frame := 2 + config.wall_detach_grace - 1
-	var failure := Expect.approx(history[last_grace_frame].velocity.y, 0.0, "vy should still be held at 0 (attached) on the last frame of the detach grace window")
-	if failure != "":
-		return failure
+	var i := 0
+	while i < history.size() and history[i].timers.get("wall_contact", 0) <= config.wall_cling_frames:
+		var failure := Expect.approx(history[i].velocity.y, 0.0, "vy should stay held at 0 while the cling budget hasn't run out (frame %d)" % i)
+		if failure != "":
+			return failure
+		i += 1
 
-	var past_grace_frames: Array[Dictionary] = [{"on_wall_left": false, "move_left": false}]
+	var last_grace_index := 2 + config.wall_detach_grace - 1
+	if last_grace_index < history.size() and last_grace_index >= i:
+		var failure := Expect.is_true(history[last_grace_index].velocity.y <= config.wall_slide_max_fall_speed + 0.001, "vy while still within detach grace, past the cling budget, should stay capped at wall_slide_max_fall_speed")
+		if failure != "":
+			return failure
+
+	var past_grace_frames: Array[Dictionary] = []
+	for j in range(20):
+		past_grace_frames.append({"on_wall_left": false, "move_left": false})
 	var post_history := InputPlayback.run(state, config, past_grace_frames, PlayerMovement.process)
-	return Expect.is_true(post_history[0].velocity.y > 0.0, "vy one frame past the detach grace window should resume falling")
+	return Expect.is_true(post_history[-1].velocity.y > config.wall_slide_max_fall_speed + 0.001, "vy well after grace has fully expired should exceed the wall-slide cap - no longer attached")
 
 ## Milestone 4 tuning iteration 1, bug 4 (part 2): a wall jump used to
 ## require actually touching the wall the exact frame jump is pressed.
 ## wall_coyote_time gives a grace window after contact is lost (mirrors
 ## ground coyote), keyed off last_wall_side to know which way is "away"
 ## once on_wall_* has already gone false.
+##
+## Milestone 4 tuning iteration 4: wall_detach_grace (14) is now longer
+## than wall_coyote_time (6), and can_wall_jump also recognizes the
+## detach-grace window directly (see _apply_jump) - so grace, not
+## wall_coyote_time, is the binding constraint for how late a wall jump
+## still fires. "Beyond" now means beyond grace.
 func _test_wall_coyote_time_allows_late_wall_jump() -> String:
 	var config := _default_config()
 
@@ -791,8 +854,8 @@ func _test_wall_coyote_time_allows_late_wall_jump() -> String:
 	if failure != "":
 		return failure
 
-	var beyond := _run_wall_coyote_scenario(config, config.wall_coyote_time + 2)
-	return Expect.is_true(beyond > -1.0, "wall jump should NOT fire well beyond wall_coyote_time frames after losing wall contact")
+	var beyond := _run_wall_coyote_scenario(config, config.wall_detach_grace + 2)
+	return Expect.is_true(beyond > -1.0, "wall jump should NOT fire well beyond wall_detach_grace frames after losing wall contact (the longer, now-binding window)")
 
 ## call index 0 = last frame actually touching the wall. call index
 ## (frames_after_losing_contact + 1) is where the press lands, mirroring
@@ -835,6 +898,34 @@ func _test_wall_detach_grace_locks_horizontal_movement() -> String:
 	var past_grace: Array[Dictionary] = [{"on_wall_left": false, "move_left": false, "move_right": true}]
 	var post_history := InputPlayback.run(state, config, past_grace, PlayerMovement.process)
 	return Expect.is_true(post_history[0].velocity.x > 0.0, "vx one frame past the detach grace window should respond to held input again")
+
+## Milestone 4 tuning iteration 4: a wall jump used to only remain
+## available via wall_coyote_time (6 frames) after releasing the wall -
+## now that wall_detach_grace (14) outlasts it, a jump pressed late in the
+## grace window (past frame 6, still within 14) used to fall through to a
+## double jump instead of firing a proper wall jump, silently burning a
+## charge it shouldn't have touched. can_wall_jump now also recognizes the
+## whole detach-grace window as wall-jump-eligible.
+func _test_wall_jump_during_late_grace_does_not_burn_double_jump() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.double_jump_available = true
+
+	var frames: Array[Dictionary] = [{"on_wall_left": true, "move_left": true}]
+	for i in range(10):
+		frames.append({"on_wall_left": false, "move_left": false, "move_right": true})
+	frames.append({"on_wall_left": false, "move_right": true, "jump_pressed": true})
+
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+	var fire_frame := history.size() - 1
+
+	var failure := Expect.approx(history[fire_frame].velocity.x, config.wall_jump_velocity.x, "pressing away during late detach grace should fire a strong (away-from-wall) wall jump")
+	if failure != "":
+		return failure
+	failure = Expect.approx(history[fire_frame].velocity.y, config.wall_jump_velocity.y + config.gravity, "vy should match the strong wall jump's launch value (one frame of gravity already applied, same as any other wall jump)")
+	if failure != "":
+		return failure
+	return Expect.is_true(history[fire_frame].double_jump_available, "double jump charge should NOT be consumed - this should fire as a wall jump, not a double jump")
 
 ## Milestone 4 tuning iteration 2, item 5: R (or falling below the kill
 ## plane, which the shell treats identically) should return the player to

@@ -7,9 +7,9 @@ extends Resource
 
 @export_group("Run")
 @export var max_run_speed: float = 2.125
-@export var ground_acceleration: float = 0.2125
+@export var ground_acceleration: float = 0.10625
 @export var ground_friction: float = 0.40
-@export var air_acceleration: float = 0.153
+@export var air_acceleration: float = 0.0765
 @export var air_friction: float = 0.10
 ## Accel multiplier applied when input opposes current velocity.
 @export var turnaround_multiplier: float = 1.8
@@ -66,7 +66,7 @@ extends Resource
 ## letting go of "into the wall" drops attachment on the very next frame
 ## (on_wall_* only reads true while still actively moving into the wall -
 ## see TileCollision), making a wall-jump-away input frame-perfect.
-@export var wall_detach_grace: int = 8
+@export var wall_detach_grace: int = 14
 ## Frames after actually losing wall contact during which a wall jump
 ## still fires - the wall-contact analogue of coyote_frames.
 @export var wall_coyote_time: int = 6
