@@ -5,5 +5,7 @@
 export/
 out.txt
 err.txt
-exitcode.txt
-tools/_validate_runner.cmd
+out_import.txt
+err_import.txt
+exitcode*.txt
+tools/_validate_runner*.cmd
