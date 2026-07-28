@@ -14,14 +14,49 @@ class_name PlayerMovement
 ## also overrides velocity directly (not via acceleration) and nothing in
 ## SPEC.md describes jump-cancelling a dash, locking out all three for
 ## simplicity/predictability is a judgment call - flagged in STATUS.md.
-static func process(state: MovementState, config: MovementConfig, solid_tiles: Dictionary = {}) -> void:
+##
+## reset_pressed (R, or the shell treating "fell below the kill plane" the
+## same way) pre-empts everything else unconditionally - teleports to
+## spawn_position with velocity/timers/abilities cleared and skips the
+## rest of this frame entirely, so it can't be blocked by an active dash
+## or leave stale collision flags from wherever the player was.
+static func process(state: MovementState, config: MovementConfig, solid_tiles: Dictionary = {}, spawn_position: Vector2 = Vector2.ZERO) -> void:
+	if state.reset_pressed:
+		_reset(state, spawn_position)
+		return
 	var dashing := _apply_dash(state, config)
 	if not dashing:
+		_update_wall_attachment(state, config)
 		_apply_jump(state, config)
 		_apply_run(state, config)
 		_apply_gravity(state, config)
 	_resolve_collision(state, config, solid_tiles)
 	_refill_abilities(state)
+
+static func _reset(state: MovementState, spawn_position: Vector2) -> void:
+	state.position = spawn_position
+	state.velocity = Vector2.ZERO
+	state.on_floor = false
+	state.on_ceiling = false
+	state.on_wall_left = false
+	state.on_wall_right = false
+	state.double_jump_available = false
+	state.dash_available = false
+	state.dash_direction = Vector2.ZERO
+	state.facing = 1.0
+	state.last_wall_side = 0.0
+	state.timers.clear()
+
+## wall_detach tracks frames since _is_pressing_into_wall was last true (0
+## = pressing into it right now) - computed here, before _apply_jump and
+## _apply_run, rather than inline inside _apply_gravity as before, so
+## _apply_run can also see this frame's value instead of the previous
+## frame's stale one (needed for the detach-grace horizontal lock).
+static func _update_wall_attachment(state: MovementState, config: MovementConfig) -> void:
+	var pressing_into := _is_pressing_into_wall(state)
+	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
+	wall_detach = 0 if pressing_into else (wall_detach + 1)
+	state.timers["wall_detach"] = wall_detach
 
 ## Jump decision reads timers BEFORE this frame's refresh, so the exact
 ## frame counts in SPEC.md section 10 (coyote: succeeds at 5 frames after
@@ -134,11 +169,23 @@ static func _current_wall_side(state: MovementState) -> float:
 		return 1.0
 	return state.last_wall_side
 
+## During wall_detach_grace, horizontal movement is pinned (velocity.x
+## zeroed, input has no authority) - a commitment window, not a slow
+## release. wall_detach was already refreshed for this frame by
+## _update_wall_attachment above. wall_detach == 0 means actively pressing
+## into the wall right now, which isn't the grace window (that's just
+## normal cling) - only 1..wall_detach_grace counts.
 static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 	# The wall jump's imparted velocity.x is meant to carry through
 	# un-fought for wall_jump_lockout_frames - this timer was already
 	# refreshed by _apply_jump earlier this same frame.
 	if state.timers.get("wall_jump_lockout", 0) > 0:
+		return
+
+	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
+	var in_detach_grace := (not state.on_floor) and wall_detach > 0 and wall_detach <= config.wall_detach_grace
+	if in_detach_grace:
+		state.velocity.x = 0.0
 		return
 
 	var input_dir := 0.0
@@ -164,30 +211,32 @@ static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 ## re-detect on_floor every single frame at rest, rather than only on the
 ## frame contact first happens.
 ##
-## wall_detach tracks frames since _is_pressing_into_wall was last true
-## (0 = pressing into it right now). "attached" stays true through
-## wall_detach_grace frames of not pressing in - without this, letting go
-## drops attachment on the very next frame (on_wall_* only reads true
-## while still actively moving into the wall - see TileCollision), making
-## a wall-jump-away input frame-perfect. wall_detach starts at
-## wall_detach_grace + 1 (already-expired) so a player who has never
-## touched a wall isn't spuriously "attached" from the field's zero
-## default.
+## "attached" (via _update_wall_attachment's wall_detach timer, already
+## refreshed for this frame before this runs) covers both actively
+## pressing into the wall and the wall_detach_grace window after letting
+## go. wall_contact counts consecutive attached frames, used only to know
+## when the cling window ends.
 ##
-## wall_contact counts consecutive attached frames, used only to know
-## when the cling window ends. entering_cling (attached, and this is the
-## first attached frame) zeroes velocity.y - clinging arrests whatever
-## vertical speed you arrived with (bug: it used to preserve it, so
-## jumping into a wall mid-ascent kept rising at full speed for up to
-## wall_cling_frames more frames). After the wall_cling_frames window,
-## gravity resumes but clamped to wall_slide_max_fall_speed instead of
-## the normal max_fall_speed, for as long as still attached.
+## Milestone 4 tuning iteration 2: cling PRESERVES whatever vertical speed
+## the player arrived with (up or down) rather than zeroing it - iteration
+## 1 zeroed it, but that made mistiming a running jump into a wall corner
+## kill all momentum instead of letting it bump-and-keep-rising, which felt
+## wrong. Read literally, "zero gravity" during cling only suspends
+## gravity's accumulation; it doesn't reset velocity.
+##
+## That reopened the superjump the zeroing had fixed (a fresh jump's full
+## -6.5 held for the whole zero-gravity cling window flings the player far
+## above normal jump height), so entry speed is clamped to
+## wall_cling_entry_speed_cap instead of the full arrest-to-0 - bounds the
+## overshoot without killing the "keep rising" feel for a more ordinary
+## graze. Only applied once, on the frame attachment begins (entering_cling)
+## - nothing else touches velocity.y while clinging.
+##
+## After the wall_cling_frames window, gravity resumes but clamped to
+## wall_slide_max_fall_speed instead of the normal max_fall_speed, for as
+## long as still attached.
 static func _apply_gravity(state: MovementState, config: MovementConfig) -> void:
-	var pressing_into := _is_pressing_into_wall(state)
 	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
-	wall_detach = 0 if pressing_into else (wall_detach + 1)
-	state.timers["wall_detach"] = wall_detach
-
 	var attached := (not state.on_floor) and wall_detach <= config.wall_detach_grace
 
 	var wall_contact: int = state.timers.get("wall_contact", 0)
@@ -196,7 +245,7 @@ static func _apply_gravity(state: MovementState, config: MovementConfig) -> void
 	state.timers["wall_contact"] = wall_contact
 
 	if entering_cling:
-		state.velocity.y = 0.0
+		state.velocity.y = clampf(state.velocity.y, -config.wall_cling_entry_speed_cap, config.wall_cling_entry_speed_cap)
 
 	var clinging := attached and wall_contact <= config.wall_cling_frames
 	if clinging:
@@ -255,8 +304,12 @@ static func _apply_dash(state: MovementState, config: MovementConfig) -> bool:
 			state.dash_available = true
 		else:
 			state.velocity.x *= config.dash_exit_horizontal_retention
+			# Milestone 4 tuning iteration 2: upward dashes used to stop
+			# dead here (velocity.y zeroed) - now retained like the
+			# horizontal axis, just through a separate knob so the two
+			# can be tuned independently.
 			if state.velocity.y < 0.0:
-				state.velocity.y = 0.0
+				state.velocity.y *= config.dash_exit_retention_vertical
 		dash_timer = 0
 		dash_cooldown = config.dash_cooldown_frames
 

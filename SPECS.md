@@ -85,21 +85,32 @@ Double jump refills on ground contact and on wall contact.
 | Param | Value |
 |---|---|
 | Wall slide max fall speed | 1.5 px/frame |
-| Wall cling | 12 frames of zero gravity on first touch while holding toward wall |
+| Wall cling | 13 frames of zero gravity on first touch while holding toward wall |
 | Wall jump velocity | (±4.0, -6.0) |
 | Wall jump input lockout | 8 frames of no horizontal input authority |
 | Wall detach grace | 8 frames of holding away/neutral before cling actually releases |
 | Wall coyote time | 6 frames after losing wall contact during which a wall jump still fires |
+| Wall cling entry speed cap | 4.0 px/frame max magnitude of velocity.y carried into a cling |
 
 Wall jump away from the wall is the strong one. Neutral wall jump (no
 directional input) launches at (±3.0, -6.5) — more height, less distance.
 
-Entering a cling **arrests vertical velocity to 0**, up or down — it does not
-just freeze gravity's accumulation on whatever speed the player arrived with.
-(Milestone 4 tuning: the original "zero gravity" reading only suspended
-gravity, silently preserving an existing fall or an in-flight jump's upward
-speed for the whole cling window — the latter is what made jumping into a
-wall from the ground fling the player far above normal jump height.)
+Entering a cling **preserves** whatever vertical velocity the player arrived
+with (up or down), up to `wall_cling_entry_speed_cap` — "zero gravity"
+suspends gravity's accumulation, it does not reset velocity. (Milestone 4
+tuning iteration 1 briefly arrested velocity to 0 on entry, to fix a bug where
+jumping into a wall from the ground flung the player far above normal jump
+height. Iteration 2 reverted that — zeroing made mistiming a running jump
+into a wall corner kill all momentum instead of letting it bump-and-keep-
+rising, which felt wrong — then added the entry speed cap to bound the
+reintroduced overshoot without eliminating the "keep rising" feel. A fresh
+jump's -6.5 clamps down to the cap; ordinary grazes under the cap are
+untouched.)
+
+During `wall_detach_grace`, horizontal movement is pinned (velocity.x zeroed,
+input has no authority) — a commitment window, not a slow release. Vertical
+behavior (cling/slide/preserved momentum) is unaffected, and a wall jump
+remains available throughout.
 
 **No stamina meter.** Wall hold is time-limited by the cling window, not by a
 draining resource. This is Ori, not Celeste.
@@ -112,7 +123,7 @@ draining resource. This is Ori, not Celeste.
 | Direction | 8-way snap from WASD; neutral input dashes in facing direction |
 | Gravity during dash | 0 |
 | Cooldown after dash ends | 6 frames |
-| Exit velocity retention | 60% horizontal, 0% vertical if upward |
+| Exit velocity retention | 60% horizontal, 60% vertical if upward |
 | Refill | on ground contact OR wall contact |
 
 Dash cancels on wall contact. Dashing into the ground at a downward angle

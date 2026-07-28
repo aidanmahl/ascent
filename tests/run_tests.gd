@@ -44,13 +44,16 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("double_jump_available_once_per_airborne_period", _test_double_jump_available_once_per_airborne_period)
 	runner.register("dash_direction_snapping", _test_dash_direction_snapping)
 	runner.register("dash_exit_velocity_retention_horizontal", _test_dash_exit_velocity_retention)
-	runner.register("dash_exit_zeroes_upward_vertical_velocity", _test_dash_exit_zeroes_upward_vertical_velocity)
+	runner.register("dash_exit_retains_upward_vertical_velocity", _test_dash_exit_retains_upward_vertical_velocity)
 	runner.register("dash_cancels_on_wall_contact_and_refills", _test_dash_cancels_on_wall_contact_and_refills)
 	runner.register("dash_cooldown_blocks_second_dash_for_exactly_6_frames", _test_dash_cooldown_blocks_second_dash)
-	runner.register("wall_cling_zeroes_velocity_on_entry", _test_wall_cling_zeroes_velocity_on_entry)
+	runner.register("wall_cling_preserves_velocity_on_entry", _test_wall_cling_preserves_velocity_on_entry)
+	runner.register("wall_cling_preserves_slow_entry_uncapped", _test_wall_cling_preserves_slow_entry_uncapped)
 	runner.register("ground_jump_into_wall_does_not_overshoot_height", _test_ground_jump_into_wall_does_not_overshoot_height)
 	runner.register("wall_detach_grace_keeps_cling_attached", _test_wall_detach_grace_keeps_cling_attached)
 	runner.register("wall_coyote_time_allows_late_wall_jump", _test_wall_coyote_time_allows_late_wall_jump)
+	runner.register("wall_detach_grace_locks_horizontal_movement", _test_wall_detach_grace_locks_horizontal_movement)
+	runner.register("reset_clears_state_and_returns_to_spawn", _test_reset_clears_state_and_returns_to_spawn)
 
 func _default_config() -> MovementConfig:
 	return load("res://src/movement/default_movement_config.tres")
@@ -227,7 +230,10 @@ func _test_input_map_bindings() -> String:
 	failure = _check_action_key("move_right", KEY_D)
 	if failure != "":
 		return failure
-	return _check_action_key("jump", KEY_SPACE)
+	failure = _check_action_key("jump", KEY_SPACE)
+	if failure != "":
+		return failure
+	return _check_action_key("reset", KEY_R)
 
 func _check_action_key(action: String, expected_keycode: Key) -> String:
 	if not InputMap.has_action(action):
@@ -272,13 +278,14 @@ func _test_wall_jump_lockout() -> String:
 
 	return Expect.is_true(history[8].velocity.x < launched_vx, "vx at frame 8 (lockout expired) should respond to the held opposing input")
 
-## Cling arrests whatever vertical speed you arrived with (bug fix -
-## previously the "12 frames of zero gravity" reading only froze gravity's
-## *accumulation*, silently preserving an initial 3.0 px/frame fall for
-## the entire window instead of stopping it). velocity.y should snap to 0
-## on the entry frame and stay there for wall_cling_frames (12) frames of
-## contact; after that, gravity resumes but clamped to
-## wall_slide_max_fall_speed.
+## First wall_cling_frames (13) frames of contact: velocity.y untouched by
+## gravity (SPEC.md section 4 "zero gravity", taken literally - not a
+## reset). Milestone 4 tuning iteration 1 briefly zeroed velocity.y on
+## entry instead; iteration 2 reverted that (it made mistiming a running
+## jump into a wall corner kill all momentum instead of letting it
+## bump-and-keep-rising, which felt wrong) - back to preserving whatever
+## vy the player arrived with. After the cling window, gravity resumes but
+## clamped to wall_slide_max_fall_speed.
 func _test_wall_cling_then_slide() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
@@ -288,7 +295,7 @@ func _test_wall_cling_then_slide() -> String:
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
 	for i in range(config.wall_cling_frames):
-		var failure := Expect.approx(history[i].velocity.y, 0.0, "vy during wall cling at frame %d (arrested to 0, not the initial 3.0 fall speed)" % i)
+		var failure := Expect.approx(history[i].velocity.y, 3.0, "vy during wall cling at frame %d (zero gravity expected, not arrested to 0)" % i)
 		if failure != "":
 			return failure
 
@@ -508,7 +515,11 @@ func _test_dash_exit_velocity_retention() -> String:
 	var expected_vx: float = config.dash_speed * config.dash_exit_horizontal_retention
 	return Expect.approx(history[exit_frame].velocity.x, expected_vx, "vx right as a horizontal dash ends should retain dash_exit_horizontal_retention of dash speed")
 
-func _test_dash_exit_zeroes_upward_vertical_velocity() -> String:
+## Milestone 4 tuning iteration 2: upward dashes used to stop dead at exit
+## (velocity.y zeroed) - now retained through dash_exit_retention_vertical,
+## the same way horizontal exit velocity already was, so a dash upward
+## feels like a launch that carries rather than a hard stop.
+func _test_dash_exit_retains_upward_vertical_velocity() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
 	state.dash_available = true
@@ -519,7 +530,8 @@ func _test_dash_exit_zeroes_upward_vertical_velocity() -> String:
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
 	var exit_frame := config.dash_duration_frames - 1
-	return Expect.approx(history[exit_frame].velocity.y, 0.0, "vertical velocity right as an upward dash ends should be zeroed")
+	var expected_vy: float = -config.dash_speed * config.dash_exit_retention_vertical
+	return Expect.approx(history[exit_frame].velocity.y, expected_vy, "vertical velocity right as an upward dash ends should retain dash_exit_retention_vertical of dash speed, not zero out")
 
 func _test_dash_cancels_on_wall_contact_and_refills() -> String:
 	var config := _default_config()
@@ -564,13 +576,17 @@ func _test_dash_cooldown_blocks_second_dash() -> String:
 	var final_history := InputPlayback.run(state, config, final_frames, PlayerMovement.process)
 	return Expect.is_true(final_history[0].timers.get("dash_timer", 0) > 0, "dash should be available again exactly dash_cooldown_frames after the previous one ended")
 
-## Milestone 4 tuning iteration 1, bug 1: entering a wall cling used to only
-## freeze gravity's *accumulation*, silently preserving whatever velocity.y
-## the player arrived with (up or down) for the whole wall_cling_frames
-## window. Seeds a strong upward velocity, injects wall contact, and checks
-## it's arrested to 0 on the very frame contact starts (not just held at
-## its prior value).
-func _test_wall_cling_zeroes_velocity_on_entry() -> String:
+## Milestone 4 tuning iteration 2: this test used to assert the opposite
+## (velocity.y arrested to 0 on cling entry - iteration 1's fix for the
+## superjump bug). Inverted per iteration 2: zeroing on entry made
+## mistiming a running jump into a wall corner kill all momentum instead
+## of letting it bump-and-keep-rising, which felt wrong, so cling once
+## again preserves whatever velocity.y the player arrived with - up to
+## wall_cling_entry_speed_cap. A fresh jump's -6.5 exceeds that cap, so it
+## clamps down to it rather than staying at the full -6.5 (that's what
+## bounds the reintroduced superjump - see
+## ground_jump_into_wall_does_not_overshoot_height).
+func _test_wall_cling_preserves_velocity_on_entry() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
 	state.velocity = Vector2(0, -6.5)
@@ -578,7 +594,20 @@ func _test_wall_cling_zeroes_velocity_on_entry() -> String:
 	var frames := InputPlayback.hold({"on_wall_left": true, "move_left": true}, 3)
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
-	return Expect.approx(history[0].velocity.y, 0.0, "vy on the first frame of wall contact should be arrested to 0, not left at the -6.5 it arrived with")
+	return Expect.approx(history[0].velocity.y, -config.wall_cling_entry_speed_cap, "vy on the first frame of wall contact should clamp to -wall_cling_entry_speed_cap, not be arrested to 0 or left at the full -6.5")
+
+## Entry speeds under wall_cling_entry_speed_cap should pass through
+## untouched - the cap only clips fast entries, it doesn't replace normal
+## preservation.
+func _test_wall_cling_preserves_slow_entry_uncapped() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.velocity = Vector2(0, 2.0)
+
+	var frames := InputPlayback.hold({"on_wall_left": true, "move_left": true}, 3)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	return Expect.approx(history[0].velocity.y, 2.0, "vy under the entry speed cap should be preserved exactly, not clamped")
 
 ## Milestone 4 tuning iteration 1, bug 2: jumping from the ground while
 ## holding into a wall used to fling the player far above normal jump
@@ -588,10 +617,18 @@ func _test_wall_cling_zeroes_velocity_on_entry() -> String:
 ## The real cause was the same bug as #1: wall cling preserved the jump's
 ## still-strongly-upward velocity.y for up to wall_cling_frames more frames
 ## instead of arresting it, which looked like a second, much bigger jump.
-## Fixing #1 fixes this too - this test locks in the visible symptom
-## (total rise) rather than the internal mechanism, against a real wall
-## placed flush against the player one pixel away, so contact registers
-## almost immediately after leaving the ground while still ascending fast.
+##
+## Milestone 4 tuning iteration 2 deliberately reopened this: cling once
+## again preserves entry velocity (arresting it made grazing a wall corner
+## mid-jump kill all momentum, which felt wrong) - but only up to
+## wall_cling_entry_speed_cap, which bounds the overshoot instead of
+## eliminating it. So this no longer asserts parity with an ordinary jump;
+## it asserts the overshoot stays within what the cap analytically allows
+## (roughly baseline + cap sustained for the whole cling window) rather
+## than being unbounded. This test locks in the visible symptom (total
+## rise) rather than the internal mechanism, against a real wall placed
+## flush against the player one pixel away, so contact registers almost
+## immediately after leaving the ground while still ascending fast.
 func _test_ground_jump_into_wall_does_not_overshoot_height() -> String:
 	var config := _default_config()
 
@@ -629,7 +666,15 @@ func _test_ground_jump_into_wall_does_not_overshoot_height() -> String:
 
 	var peak: float = _peak_height(history)
 	var rise: float = start_y - peak
-	return Expect.is_true(rise <= baseline_rise + 2.0, "rise while jumping into a wall (%s) should not exceed an ordinary jump's rise (%s)" % [rise, baseline_rise])
+	# Analytical ceiling, not a hardcoded number: the cling window can add
+	# at most wall_cling_entry_speed_cap px of extra rise per frame for
+	# wall_cling_frames frames on top of an ordinary jump's own rise. A
+	# generous +10px margin covers the pre-contact ascent and post-cling
+	# decay tail without being so loose it'd miss a real regression back
+	# to unbounded (the pre-cap behavior was 128.7px against this ~106px
+	# ceiling).
+	var ceiling: float = baseline_rise + config.wall_cling_entry_speed_cap * config.wall_cling_frames + 10.0
+	return Expect.is_true(rise <= ceiling, "rise while jumping into a wall (%s) should stay within the entry-speed-cap-bounded ceiling (%s), not be unbounded" % [rise, ceiling])
 
 ## Milestone 4 tuning iteration 1, bug 4 (part 1): releasing "into the
 ## wall" used to drop cling attachment on the very next frame (on_wall_*
@@ -693,3 +738,68 @@ func _run_wall_coyote_scenario(config: MovementConfig, frames_after_losing_conta
 
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 	return history[press_at_call].velocity.y
+
+## Milestone 4 tuning iteration 2, item 2: the detach grace window used to
+## leave horizontal movement fully responsive, which felt like a "slow
+## release" rather than a commitment window. During the grace, velocity.x
+## should be pinned at 0 regardless of held input, then respond normally
+## again the instant grace expires.
+func _test_wall_detach_grace_locks_horizontal_movement() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+
+	var frames: Array[Dictionary] = [{"on_wall_left": true, "move_left": true}]
+	for i in range(config.wall_detach_grace):
+		frames.append({"on_wall_left": false, "move_left": false, "move_right": true})
+
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	for i in range(1, config.wall_detach_grace + 1):
+		var failure := Expect.approx(history[i].velocity.x, 0.0, "vx during the detach grace window at frame %d should be pinned at 0 despite held opposing input" % i)
+		if failure != "":
+			return failure
+
+	var past_grace: Array[Dictionary] = [{"on_wall_left": false, "move_left": false, "move_right": true}]
+	var post_history := InputPlayback.run(state, config, past_grace, PlayerMovement.process)
+	return Expect.is_true(post_history[0].velocity.x > 0.0, "vx one frame past the detach grace window should respond to held input again")
+
+## Milestone 4 tuning iteration 2, item 5: R (or falling below the kill
+## plane, which the shell treats identically) should return the player to
+## the level spawn point with velocity, timers, and ability charges all
+## cleared - implemented as a pure MovementState operation so it's
+## reachable from this harness rather than only from the node layer.
+func _test_reset_clears_state_and_returns_to_spawn() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.position = Vector2(500, 300)
+	state.velocity = Vector2(7.0, -6.5)
+	state.double_jump_available = true
+	state.dash_available = true
+	state.facing = -1.0
+	state.last_wall_side = -1.0
+	state.timers["coyote"] = 4
+	state.timers["dash_timer"] = 5
+	state.reset_pressed = true
+
+	var spawn := Vector2(0.0, 400.0)
+	PlayerMovement.process(state, config, {}, spawn)
+
+	var failure := Expect.approx(state.position.x, spawn.x, "position.x after reset should be at the spawn point")
+	if failure != "":
+		return failure
+	failure = Expect.approx(state.position.y, spawn.y, "position.y after reset should be at the spawn point")
+	if failure != "":
+		return failure
+	failure = Expect.approx(state.velocity.x, 0.0, "velocity.x after reset should be cleared")
+	if failure != "":
+		return failure
+	failure = Expect.approx(state.velocity.y, 0.0, "velocity.y after reset should be cleared")
+	if failure != "":
+		return failure
+	failure = Expect.is_false(state.double_jump_available, "double jump charge should be cleared by reset, not granted")
+	if failure != "":
+		return failure
+	failure = Expect.is_false(state.dash_available, "dash charge should be cleared by reset, not granted")
+	if failure != "":
+		return failure
+	return Expect.equal(state.timers.size(), 0, "all timers should be cleared by reset")

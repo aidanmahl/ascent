@@ -37,15 +37,26 @@ extends Resource
 ## dash_available (refilled separately by ground/wall contact).
 @export var dash_cooldown_frames: int = 6
 ## Fraction of dash speed kept on the horizontal axis when a dash ends
-## naturally (not cancelled by a wall). Vertical is zeroed instead if the
-## dash was moving upward, per SPEC.md section 4.
+## naturally (not cancelled by a wall).
 @export var dash_exit_horizontal_retention: float = 0.6
+## Fraction of dash speed kept on the vertical axis when an upward dash
+## ends naturally - a separate knob from the horizontal one so either can
+## be tuned without coupling to the other.
+@export var dash_exit_retention_vertical: float = 0.6
 
 @export_group("Wall")
 @export var wall_slide_max_fall_speed: float = 1.5
 ## Frames of zero gravity when first pressing into a touched wall, before
 ## it settles into a slide capped at wall_slide_max_fall_speed.
-@export var wall_cling_frames: int = 12
+@export var wall_cling_frames: int = 13
+## Max magnitude of velocity.y carried into a cling on entry. Cling
+## preserves whatever vertical speed the player arrived with (a fast
+## graze should still bump-and-rise, not stop dead), but a fresh jump's
+## full -6.5 sustained for the whole zero-gravity cling window would fling
+## the player far above normal jump height - this bounds that without
+## eliminating the "keep rising" feel entirely. Entry speeds under the cap
+## are untouched.
+@export var wall_cling_entry_speed_cap: float = 4.0
 ## Wall jump while holding away from the wall - the strong one (more
 ## distance). Sign is resolved at jump time from which wall is touched.
 @export var wall_jump_velocity: Vector2 = Vector2(4.0, -6.0)

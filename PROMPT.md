@@ -1,96 +1,94 @@
-Milestone 4 tuning iteration 1. This is a tuning pass, NOT a milestone
-advance. Do not start milestone 5. Do not add the gun, enemies, or combat.
+Milestone 4 tuning iteration 2. Still a tuning pass. Do not advance to
+milestone 5.
 
-Do the movement fixes FIRST, then build the level geometry against the
-corrected values. Gravity is changing, which changes jump height and
-distance — geometry authored before the fix would be wrong.
+## 1. Revert the wall cling velocity change
 
-## Bugs
+I was wrong last round. Zeroing vertical velocity on wall cling feels bad.
+Mistiming a running jump and clipping a wall corner now kills all momentum,
+when it should let me bump the wall and keep rising to clear the ledge.
 
-### 1. Wall cling preserves upward velocity
-Jumping upward into a wall while holding toward it keeps my upward momentum
-after I cling. Clinging should arrest all vertical movement.
+Revert it: entering wall cling preserves existing vertical velocity,
+including upward velocity.
 
-Suspected cause: the cling state zeroes gravity but does not zero
-velocity.y, so existing upward velocity persists through the cling window.
+IMPORTANT: this must NOT reintroduce the superjump. Those were separate
+causes — the superjump came from the stale jump buffer firing a wall jump,
+which you fixed independently. That fix stays. The superjump regression test
+must still pass after this revert. If reverting brings the superjump back,
+the buffer fix was incomplete — tell me rather than re-zeroing velocity.
 
-Fix: entering wall cling sets velocity.y = 0. Cling holds position; it does
-not preserve upwards momentum. Regular downwards wall-clinging gravity should still apply afterwards.
+You have a regression test asserting velocity.y == 0 on cling. Rewrite it to
+assert the opposite: upward velocity is preserved through the cling window.
+This is an authorized test change because the spec changed. Do not delete
+it — invert it.
 
-### 2. Jumping into a wall from the ground launches me far too high
-Holding toward a wall while jumping from the ground flings me straight up,
-well above normal jump height. It should be an ordinary jump that ends with
-me clinging to the wall.
+Also increase the wall cling window by 10%: 12 -> 13 frames.
 
-Suspected cause: the jump buffer is not consumed by the ground jump, so when
-wall contact registers a frame or two later, the still-live buffered input
-immediately fires a neutral wall jump, stacking a second upward impulse.
+While you're in here: report whether corner correction is firing when I clip
+a wall corner mid-jump. If it isn't, say so — don't change it yet.
 
-Investigate and confirm the actual cause before fixing. Do not patch the
-symptom. If it is the buffer, the fix is to consume the buffer on any
-successful jump and add a short lockout preventing a wall jump within a few
-frames of a ground jump.
+## 2. Detach grace should lock horizontal movement
 
-### 3. Gravity too strong
-Reduce gravity 10%: 0.45 -> 0.405.
+The 8-frame detach grace timing feels right, but the character currently
+moves normally during it. It should be pinned.
 
-Report the resulting max jump height and max jump distance in pixels — the
-level validity constants depend on them. Leave max fall speed at 5.5 and
-tell me whether it should come down too.
+During wall_detach_grace:
+- Horizontal velocity is 0 and horizontal input has no authority
+- Vertical behavior is completely unchanged — whatever the wall state was
+  doing (cling hang, wall slide, preserved upward momentum) continues exactly
+  as it would have
+- Wall jump remains available
+- When the grace expires, the character detaches and normal movement resumes
 
-### 4. Wall jumping away is frame-perfect
-Holding away from the wall releases the cling immediately, so jumping away
-requires direction and jump on the same frame.
+The grace is a commitment window, not a slow release.
 
-Add two MovementConfig parameters:
-- wall_detach_grace: frames of holding away before the cling actually
-  releases. Start at 8.
-- wall_coyote_time: frames after losing wall contact during which a wall
-  jump still fires. Start at 6.
+## 3. Dash should preserve vertical momentum on exit
 
-During the detach grace the player stays attached and a wall jump remains
-available.
+Upward and diagonal-up dashes stop dead at the end. Vertical exit velocity
+should be retained the same way horizontal is — a dash upward should feel
+like a launch that carries, not a hard stop.
 
-## Test level geometry
+Not extremely strong. A plausible continuation of the dash speed.
 
-After the fixes land, extend the test level. It is currently too plain to
-exercise the moveset.
+Add a separate exported param rather than reusing the horizontal one:
+- dash_exit_retention_vertical: start at 0.6, matching horizontal
 
-This is a movement gym for tuning, NOT the sample level from SPEC section 9.
-Do not author the real level — that is milestone 10. Keep it functional and
-ugly. Placeholder tiles only. But, as the game name implies, the levels will be built upwards. Build a level 
-with sufficient vertical taversal for me to test. 
+Report the new maximum reachable height for a dash-jump, since the level
+validity constants depend on it.
 
-It must let me test, in isolation and in combination:
-- overhangs and ceilings I can hit and pass under
-- floating platforms that require a double jump to reach
-- gaps that require a dash, and gaps that require dash + jump
-- a vertical shaft requiring chained wall jumps
-- facing walls at several widths, for wall-to-wall climbing
-- a long flat run for top speed and stopping distance
+## 4. Ability indicators
 
-Lay it out so I can reach every section without restarting.
+Add a placeholder visual for remaining abilities:
+- A colored line along the TOP edge of the player rectangle = double jump
+  available
+- A colored line along the BOTTOM edge = dash available
+
+Each disappears when consumed and returns on refill. Different colors.
+
+Placeholder only — this gets replaced by real art later, so keep it fully
+decoupled from movement logic and trivial to remove.
+
+## 5. Reset
+
+Implement R to reset (already listed in SPEC section 3, never built).
+R returns the player to the level spawn point with all velocity, timers, and
+ability charges cleared.
+
+ADDITION I'm making, tell me if you disagree: also add a kill plane below the
+level that triggers the same reset automatically. Falling out of the level
+currently requires refreshing the page.
+
+There is no room system yet — that's milestone 7 — so reset means level spawn
+point, not room start.
 
 ## Requirements
 
-- Every bug above gets a permanent regression test in the input-playback
-  harness. These are exactly the cases it exists for.
-- All new values go in MovementConfig as exported fields. No magic numbers.
-- Update SPEC.md section 4 so its listed values match the config.
-- Do not change any movement value I did not ask you to change. If a fix
-  requires one, tell me rather than doing it.
+- Every change above gets a regression test in the input-playback harness.
+- New values are exported MovementConfig fields. No magic numbers.
+- Update SPEC.md section 4 to match the config.
+- Do not change any value I did not ask you to change. If a fix requires it,
+  tell me instead.
 
-## Workflow — this is now the standard loop
+## Workflow
 
-1. Fix
-2. tools\validate.cmd exits 0
-3. Rebuild the web export to docs/
-4. Commit and push to origin/main
-5. Report what changed, and what I should specifically look for when testing
-
-Nothing is done until it is pushed. I test by refreshing the GitHub Pages
-link.
-
-
-After you are done with this, provide me a straightforward bullet point list of values I may want
-to tweak and test myself iteratively, and where those values live. 
+Fix -> validate.cmd exits 0 -> rebuild web export to docs/ -> commit -> push.
+Report what changed and what to look for when I test.

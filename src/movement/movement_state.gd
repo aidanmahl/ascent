@@ -17,6 +17,10 @@ var look_down: bool = false
 var jump_pressed: bool = false
 var jump_released: bool = false
 var dash_pressed: bool = false
+## Just-pressed edge for the reset action (R, or the shell synthesizing
+## one when the player falls below the level's kill plane) - either way
+## it's treated identically by PlayerMovement.process().
+var reset_pressed: bool = false
 
 ## Collision flags, written by the movement core's collision resolution
 ## each frame. Also directly settable by tests to isolate jump/gravity
@@ -56,6 +60,7 @@ func clone() -> MovementState:
 	copy.jump_pressed = jump_pressed
 	copy.jump_released = jump_released
 	copy.dash_pressed = dash_pressed
+	copy.reset_pressed = reset_pressed
 	copy.on_floor = on_floor
 	copy.on_ceiling = on_ceiling
 	copy.on_wall_left = on_wall_left

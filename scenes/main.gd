@@ -16,11 +16,22 @@ extends Node2D
 const TILE_SIZE := 16
 const TILE_COLOR := Color(0.55, 0.4, 0.25)
 
+## No room system yet (milestone 7), so "reset" - R, or falling below
+## KILL_PLANE_Y - means this level spawn point, not a room start.
+const SPAWN_POINT := Vector2(0, 400)
+## Comfortably below every section's floor (lowest is row 30, y=480-496) -
+## the dash-required gap (section B) has no floor under it at all, so
+## missing that dash currently means falling forever without this.
+const KILL_PLANE_Y := 1000.0
+
 @onready var player: Player = $Player
 
 func _ready() -> void:
 	var solid_tiles := _build_geometry()
 	player.solid_tiles = solid_tiles
+	player.spawn_point = SPAWN_POINT
+	player.kill_plane_y = KILL_PLANE_Y
+	player.position = SPAWN_POINT
 	_spawn_visuals(solid_tiles)
 
 ## Row numbers decrease upward (Godot's Y-down convention) - the level
