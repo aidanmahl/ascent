@@ -25,7 +25,13 @@ static func resolve(position: Vector2, velocity: Vector2, collider_size: Vector2
 	pos.x += vel.x
 	var x_result := _resolve_x(pos, collider_size, vel.x, solid_tiles, tile_size)
 	pos.x = x_result.x
+	var on_wall_left := false
+	var on_wall_right := false
 	if x_result.collided:
+		if vel.x < 0.0:
+			on_wall_left = true
+		else:
+			on_wall_right = true
 		vel.x = 0.0
 
 	pos.y += vel.y
@@ -45,6 +51,8 @@ static func resolve(position: Vector2, velocity: Vector2, collider_size: Vector2
 		"velocity": vel,
 		"on_floor": on_floor,
 		"on_ceiling": on_ceiling,
+		"on_wall_left": on_wall_left,
+		"on_wall_right": on_wall_right,
 	}
 
 static func _to_tile(coord: float, tile_size: int) -> int:

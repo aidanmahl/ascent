@@ -32,6 +32,12 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("corner_correction_large_overlap_still_blocks", _test_corner_correction_blocks)
 	runner.register("never_tunnels_through_floor_at_max_fall_speed", _test_no_tunneling_at_max_fall_speed)
 	runner.register("input_map_binds_move_and_jump_to_spec_keys", _test_input_map_bindings)
+	runner.register("wall_jump_lockout_blocks_input_for_8_frames", _test_wall_jump_lockout)
+	runner.register("wall_cling_zero_gravity_then_slide_cap", _test_wall_cling_then_slide)
+	runner.register("wall_slide_caps_fall_speed_from_faster_initial_fall", _test_wall_slide_caps_fall_speed)
+	runner.register("wall_jump_away_from_wall_is_strong", _test_wall_jump_away_is_strong)
+	runner.register("wall_jump_neutral_is_weak_and_high", _test_wall_jump_neutral_is_weak_and_high)
+	runner.register("wall_detection_from_real_collision", _test_wall_detection_from_real_collision)
 
 func _default_config() -> MovementConfig:
 	return load("res://src/movement/default_movement_config.tres")
@@ -219,3 +225,113 @@ func _check_action_key(action: String, expected_keycode: Key) -> String:
 			return ""
 
 	return "action '%s' has no InputEventKey bound to physical_keycode %s" % [action, expected_keycode]
+
+## Wall tests inject on_wall_left/right directly, same reasoning as the
+## coyote/buffer tests: isolates the jump/gravity/timer logic from
+## collision resolution, which _test_wall_detection_from_real_collision
+## covers separately.
+
+## SPEC.md section 10's only explicitly-named wall rule. Fires a strong
+## (away-from-wall) jump at frame 0, then holds the opposite direction
+## (fighting the launch) for the next several frames. As implemented,
+## wall_jump_lockout_frames (8) covers frames 0..7 inclusive - the launch
+## frame counts as the first locked frame, since the timer is refreshed
+## before _apply_run reads it that same frame.
+func _test_wall_jump_lockout() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+
+	var frames: Array[Dictionary] = [{"on_wall_left": true, "jump_pressed": true, "move_right": true}]
+	for i in range(9):
+		frames.append({"on_wall_left": false, "move_right": false, "move_left": true, "jump_pressed": false})
+
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var launched_vx: float = history[0].velocity.x
+	var failure := Expect.approx(launched_vx, config.wall_jump_velocity.x, "vx immediately after a strong (away-from-wall) wall jump")
+	if failure != "":
+		return failure
+
+	for i in range(1, 8):
+		failure = Expect.approx(history[i].velocity.x, launched_vx, "vx during wall jump lockout at frame %d should stay locked at the launch value" % i)
+		if failure != "":
+			return failure
+
+	return Expect.is_true(history[8].velocity.x < launched_vx, "vx at frame 8 (lockout expired) should respond to the held opposing input")
+
+## First wall_cling_frames (12) frames of contact: velocity.y untouched by
+## gravity (SPEC.md section 4 says "zero gravity", taken literally - not a
+## reset to zero). After that, gravity resumes but clamped to
+## wall_slide_max_fall_speed.
+func _test_wall_cling_then_slide() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.velocity = Vector2(0, 3.0)
+
+	var frames := InputPlayback.hold({"on_wall_left": true, "move_left": true}, 30)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	for i in range(config.wall_cling_frames):
+		var failure := Expect.approx(history[i].velocity.y, 3.0, "vy during wall cling at frame %d (zero gravity expected)" % i)
+		if failure != "":
+			return failure
+
+	return Expect.approx(history[-1].velocity.y, config.wall_slide_max_fall_speed, "vy well after the cling window should settle at the wall-slide cap")
+
+## Seeds wall_contact past the cling window directly, so this isolates the
+## slide cap from the cling phase entirely: even arriving at a wall already
+## falling faster than the cap, the very first sliding frame should clamp
+## down to it immediately.
+func _test_wall_slide_caps_fall_speed() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.velocity = Vector2(0, 4.0)
+	state.timers["wall_contact"] = config.wall_cling_frames + 1
+
+	var frames := InputPlayback.hold({"on_wall_left": true, "move_left": true}, 5)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	return Expect.approx(history[0].velocity.y, config.wall_slide_max_fall_speed, "vy on the first sliding frame should clamp to the wall-slide cap even from a faster initial fall")
+
+func _test_wall_jump_away_is_strong() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	var frames: Array[Dictionary] = [{"on_wall_left": true, "jump_pressed": true, "move_right": true}]
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var vel := history[0].velocity
+	var failure := Expect.approx(vel.x, config.wall_jump_velocity.x, "strong wall jump vx (away from a wall on the left, so positive)")
+	if failure != "":
+		return failure
+	return Expect.approx(vel.y, config.wall_jump_velocity.y + config.gravity, "strong wall jump vy (one frame of gravity already applied)")
+
+func _test_wall_jump_neutral_is_weak_and_high() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	var frames: Array[Dictionary] = [{"on_wall_left": true, "jump_pressed": true}]
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var vel := history[0].velocity
+	var failure := Expect.approx(vel.x, config.wall_jump_neutral_velocity.x, "neutral wall jump vx (no directional input held)")
+	if failure != "":
+		return failure
+	return Expect.approx(vel.y, config.wall_jump_neutral_velocity.y + config.gravity, "neutral wall jump vy (one frame of gravity already applied)")
+
+## Proves on_wall_right actually gets set by real TileCollision resolution,
+## not just by the direct injection every other wall test uses to isolate
+## timer/gravity logic.
+func _test_wall_detection_from_real_collision() -> String:
+	var config := _default_config()
+	# Tall enough that gravity pulling the player down while it accelerates
+	# sideways (nothing else to stand on here) can't carry it past the
+	# bottom of the wall before it arrives horizontally.
+	var solid_tiles: Dictionary = {}
+	for row in range(-5, 20):
+		solid_tiles[Vector2i(1, row)] = true
+	var state := MovementState.new()
+	state.position = Vector2(2, 8)
+
+	var frames := InputPlayback.hold({"move_right": true}, 40)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	return Expect.is_true(history[-1].on_wall_right, "player pushing right into a real wall tile should register on_wall_right")

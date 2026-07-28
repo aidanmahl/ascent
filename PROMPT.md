@@ -1,6 +1,6 @@
 Read CLAUDE.md, SPEC.md, and STATUS.md.
 
-Implement milestone 1 only. Every rule in SPEC section 10 that applies to
+Implement milestone 2 only. Every rule in SPEC section 10 that applies to
 this milestone needs a test in the input-playback harness.
 
 When done: run tools\validate.cmd, confirm it exits 0, commit, and update

@@ -1,98 +1,92 @@
 # Status
 
-## Done — Milestone 1: run, jump, gravity, coyote, buffer, variable height, corner correction
-- `src/collision/tile_collision.gd` (`TileCollision`) — new pure module, not
-  called out explicitly in SPEC.md's milestone list but required to make
-  coyote/buffer/corner-correction genuinely testable rather than faked.
-  Discrete (non-swept) AABB-vs-tile-grid resolution: `solid_tiles` is a
-  plain `Dictionary[Vector2i, bool]`, so the same function runs against
-  real level geometry later and synthetic geometry in tests. X pass then Y
-  pass; Y pass attempts a corner-correction nudge (up to
-  `corner_correction_px`) before blocking, per SPEC section 4. No engine
-  calls — just `Vector2`/`Vector2i`/`Dictionary` math.
-- `src/movement/movement_config.gd` and `default_movement_config.tres`
-  extended with every SPEC section 4 "Run" and "Gravity & Jump" value
-  (wall/dash fields intentionally not added yet — those are milestones 2
-  and 3), plus `collider_size` (10×16 per section 2) and `tile_size` (16).
-- `src/movement/movement_state.gd` extended with `jump_pressed`/
-  `jump_released` (shell-computed input edges) and `on_floor`/`on_ceiling`
-  (collision flags, written by the core each frame — also directly
-  settable by tests to isolate timer logic from collision resolution).
-- `src/movement/player_movement.gd` rewritten: jump decision (coyote +
-  buffer + variable-height cut) reads timers *before* refreshing them, so
-  the exact frame boundaries in SPEC section 10 land correctly instead of
-  being off-by-one — see the doc comment on `_apply_jump` for the two bugs
-  this caught during development (a fresh press on a grounded frame was
-  getting delayed a frame through the buffer; a jump firing on a grounded
-  frame could re-arm coyote to full on its own launch frame via stale
-  `on_floor`, handing out a free extra jump). Then run accel/friction/
-  turnaround via `move_toward`, gravity with apex-hang and max-fall-speed
-  clamp, then `TileCollision.resolve`.
-- `tests/framework/input_playback.gd` gained `pulse()` (one-frame edge,
-  for `jump_pressed`/`jump_released`) and `merge()` (index-wise combine of
-  two frame sequences) — needed once tests had more than one input
-  dimension changing at different times.
-- `tests/run_tests.gd`: replaced the milestone-0 smoke tests with real
-  SPEC section 10 coverage — coyote succeeds at 5 frames / fails at 8,
-  jump buffer fires at 6 frames before landing / expires beyond the
-  8-frame window, early jump release peaks measurably lower than held,
-  corner correction passes a ≤4px clip and still blocks a 9px overlap,
-  never tunnels through a floor at max fall speed, plus a regression test
-  for the hand-written input map (below). 9/9 pass.
-- `project.godot` `[input]`: added `move_left`(A)/`move_right`(D)/`jump`
-  (Space) per SPEC section 3. Hand-written `InputEventKey` resource syntax
-  is easy to get subtly wrong, so it's covered by an actual test
-  (`input_map_binds_move_and_jump_to_spec_keys`) rather than just eyeballed.
-- `scenes/player.gd` rewritten to read `move_left`/`move_right`/`jump`
-  (via `is_action_just_pressed`/`just_released` for the edges) and pass a
-  placeholder flat floor into `PlayerMovement.process` — see "Surprised
-  by" below. `scenes/player.tscn` collider/visual resized to 10×16 to
-  match `MovementConfig.collider_size`, and given a starting position
-  above the placeholder floor.
-- `tools/validate.cmd` passes, 9/9 tests green.
+## Done — Milestone 2: wall slide, cling, wall jump
+- `src/movement/movement_config.gd`/`default_movement_config.tres`: added
+  the SPEC section 4 "Wall" values — `wall_slide_max_fall_speed` (1.5),
+  `wall_cling_frames` (12), `wall_jump_velocity` (4.0, -6.0, the strong
+  away-from-wall jump), `wall_jump_neutral_velocity` (3.0, -6.5, more
+  height/less distance), `wall_jump_lockout_frames` (8).
+- `src/movement/movement_state.gd`: added `on_wall_left`/`on_wall_right`
+  collision flags, same pattern as `on_floor`/`on_ceiling` — written by
+  the core, also directly injectable by tests.
+- `src/collision/tile_collision.gd`: the X-pass now reports which side a
+  horizontal collision happened on (moving left + collide → wall on the
+  left, etc.), so `on_wall_left`/`on_wall_right` come from the same real
+  geometry resolution as everything else, not a separate check.
+- `src/movement/player_movement.gd`:
+  - `_apply_jump` now branches ground vs. wall jump (`can_wall_jump` =
+    touching a wall and not on a floor; only considered if a ground jump
+    didn't already fire). Direction and strength are resolved at fire
+    time: holding away from the touched wall gives the strong jump,
+    anything else (including holding back into the wall — SPEC.md doesn't
+    define this case, see "Surprised by") gives the neutral one.
+  - `_apply_run` skips input entirely while `wall_jump_lockout > 0` (read
+    directly off the timer `_apply_jump` already refreshed this same
+    frame), so the wall jump's velocity carries through unfought.
+  - `_apply_gravity` tracks `wall_contact`, consecutive frames of actively
+    pressing into a touched wall while airborne (resets to 0 the instant
+    either condition breaks, so letting go drops you immediately rather
+    than lagging a frame). First `wall_cling_frames` of contact: gravity's
+    acceleration is suspended entirely, so whatever vertical speed you
+    arrived with is preserved rather than reset to zero (see "Surprised
+    by" — SPEC.md's "zero gravity" is taken literally). After that, normal
+    gravity resumes but clamped to `wall_slide_max_fall_speed` instead of
+    `max_fall_speed`.
+- `tests/run_tests.gd`: 6 new tests — the SPEC section 10 lockout rule
+  (input has no authority for 8 frames after a wall jump), cling holds
+  velocity.y flat for exactly 12 frames then the slide cap takes over,
+  the slide cap clamps immediately even from a faster incoming fall,
+  strong vs. neutral wall jump velocities, and one test using real
+  `TileCollision` geometry (not injected flags) to prove
+  `on_wall_left`/`on_wall_right` actually get set in practice. 15/15 pass.
+- `scenes/player.gd`'s placeholder scaffolding now includes two wall
+  columns flanking the existing floor, so wall slide/cling/jump has
+  something to interact with once a human is testing interactively.
+- `tools/validate.cmd` passes, 15/15 tests green.
 
 ## Next
-- Milestone 2: wall slide, cling, wall jump.
+- Milestone 3: double jump, dash. Then **milestone 4 is a hard stop** —
+  human tuning pass, no further milestones without approval.
 
 ## Surprised by / flagging
-- **Discrete, not swept, collision.** `TileCollision` resolves by moving
-  the full axis delta then clamping on overlap, not by sweeping. This is
-  only tunnel-safe because every MovementConfig speed (max fall 5.5,
-  max run 2.5) stays below `tile_size` (16px) — a single frame's move can
-  never fully skip a one-tile-thick wall. The tunneling test asserts that
-  precondition explicitly rather than assuming it silently holds, but it's
-  worth re-checking once dash (7.0 px/frame, still under 16 — fine for now)
-  or any faster movement lands in milestone 3.
-- **Added a placeholder floor that SPEC.md doesn't ask for.** Milestone 7
-  owns the real room/level framework; nothing before it gives a human
-  anything to stand on. Since milestone 4 is a human tuning pass that
-  requires actually jumping around and feeling the moveset, `player.gd`
-  now builds a flat strip of solid tiles in code (clearly commented as
-  scaffolding, not the level system) purely so the interactive scene isn't
-  free-falling forever. This is a scope decision beyond "implement
-  milestone 1 only" — flagging in case that's unwanted; it's a few lines
-  and trivial to delete when milestone 7 lands.
-- **Two ordering bugs in the jump logic, both caught by hand-tracing SPEC's
-  exact frame numbers before running anything** (not by the test suite
-  failing after the fact): (1) a jump press on the same frame the player
-  is already grounded would silently get delayed one frame if buffer-vs-
-  press weren't merged into one `wants_jump` check; (2) a fired jump could
-  re-arm `coyote` to full on its own launch frame (because collision
-  resolution — which would correctly flip `on_floor` false — hasn't run
-  yet when the jump decision reads it), which would have granted a free
-  extra jump within the coyote window immediately after every grounded
-  jump. Both are fixed and covered by the coyote/buffer tests, but this
-  class of bug (stale flags read before the same-frame update that would
-  invalidate them) seems likely to recur in milestone 2's wall logic.
-- **Did not launch the interactive game.** CLAUDE.md's process-safety
-  section forbids invoking `godot`/`godot_console` outside
-  `tools\validate.cmd`, so the shell/input-map wiring is verified by tests
-  (including a real `InputMap` binding check) but not by actually pressing
-  A/D/Space in a running window. Milestone 4's human tuning pass is the
-  first point where that's expected to happen anyway.
-- **`sign()` inside a `:=` expression fails GDScript's type inference**
-  (`Cannot infer the type of "opposing" variable`) even though the
-  expression obviously evaluates to `bool` — `sign()`'s overloaded
-  int/float return type seems to be the culprit. Fixed by giving `opposing`
-  an explicit `: bool` annotation instead of `:=`. Worth remembering for
-  any future code that chains comparisons through `sign()`.
+- **"Zero gravity" during cling is taken literally as "gravity doesn't
+  accelerate," not "velocity.y resets to zero."** SPEC.md section 4 says
+  only "12 frames of zero gravity on first touch," nothing about resetting
+  velocity. So grabbing a wall while falling fast keeps that fall speed
+  constant (not accelerating further) for the cling window, then clamps
+  down to the slide cap once it ends — it does not "catch" you with a
+  snap to near-zero. If the intended feel is a hard catch, that's a
+  one-line change (zero `velocity.y` when `wall_contact` transitions from
+  0 to 1) — flagging rather than silently picking the snappier-feeling
+  interpretation.
+- **Pressing back into the wall (not away, not neutral) at wall-jump time
+  isn't defined by SPEC.md.** It only names two cases: away (strong) and
+  neutral/no-input (weak+high). Implemented so anything that isn't
+  "pressing away" — including holding into the wall — falls back to the
+  neutral jump. Reasonable default, but a real decision point if it feels
+  wrong in the milestone 4 tuning pass.
+- **Wall jump has no coyote-style grace window.** Ground jump gets coyote
+  time; wall jump requires actually touching the wall *this* frame
+  (`on_wall_left`/`on_wall_right` true right now). SPEC.md doesn't mention
+  wall coyote, so none was added — but it's a very Ori/Celeste-ish thing
+  to want later. Flagging rather than guessing.
+- **Tried to visually verify the new wall geometry with the screenshot
+  tool and it didn't work — but not because of a wall bug.** There is
+  still no `Camera2D` in `main.tscn` (flagged, not fixed, back in
+  milestone 1's status), so the viewport only ever shows raw world-space
+  from (0,0). The placeholder walls sit left of spawn, and scripting the
+  player to walk toward one just walked it further off the left edge of
+  frame — every captured screenshot was blank gray. The tool itself
+  worked fine (files saved, no errors); there was just nothing in frame
+  to capture. Camera framing is now clearly worth doing sooner than
+  milestone 7 if visual verification is going to keep being useful.
+- **The stale-flag-read ordering bug class predicted at the end of
+  milestone 1 did recur, in a milder form.** `_apply_gravity` reads
+  `state.on_wall_left`/`on_wall_right` before this frame's collision
+  resolution updates them (same pattern as `on_floor` in `_apply_jump`).
+  Unlike the coyote bug, this one turned out to be harmless here — being
+  one frame stale on wall contact for gravity purposes just means the
+  cling/slide state lags a single frame behind a wall touch/release,
+  which is unobservable at 60fps and doesn't compound the way the coyote
+  bug did — but it's the same shape of risk, worth double-checking by
+  hand again for milestone 3's dash (refill-on-wall-contact timing).

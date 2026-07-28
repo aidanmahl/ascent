@@ -20,6 +20,8 @@ var jump_released: bool = false
 ## frame).
 var on_floor: bool = false
 var on_ceiling: bool = false
+var on_wall_left: bool = false
+var on_wall_right: bool = false
 
 var timers: Dictionary = {}
 
@@ -33,5 +35,7 @@ func clone() -> MovementState:
 	copy.jump_released = jump_released
 	copy.on_floor = on_floor
 	copy.on_ceiling = on_ceiling
+	copy.on_wall_left = on_wall_left
+	copy.on_wall_right = on_wall_right
 	copy.timers = timers.duplicate()
 	return copy

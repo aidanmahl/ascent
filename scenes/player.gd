@@ -6,13 +6,13 @@ class_name Player
 var state: MovementState = MovementState.new()
 
 ## Placeholder scaffolding only: the real room/level framework (TileMapLayer-
-## backed) is milestone 7. This is just enough flat ground to stand and jump
-## on for manual testing ahead of milestone 4's human tuning gate - not the
-## real level system.
+## backed) is milestone 7. This is just enough flat ground and a couple of
+## walls to stand on, cling to, and jump between for manual testing ahead
+## of milestone 4's human tuning gate - not the real level system.
 var _solid_tiles: Dictionary = {}
 
 func _ready() -> void:
-	_solid_tiles = _build_placeholder_floor()
+	_solid_tiles = _build_placeholder_geometry()
 
 func _physics_process(_delta: float) -> void:
 	state.move_left = Input.is_action_pressed("move_left")
@@ -26,9 +26,12 @@ func _physics_process(_delta: float) -> void:
 	position = state.position
 	velocity = state.velocity
 
-func _build_placeholder_floor() -> Dictionary:
+func _build_placeholder_geometry() -> Dictionary:
 	var tiles := {}
-	var row := 10
+	var floor_row := 10
 	for col in range(-20, 20):
-		tiles[Vector2i(col, row)] = true
+		tiles[Vector2i(col, floor_row)] = true
+	for row in range(4, floor_row):
+		tiles[Vector2i(-8, row)] = true
+		tiles[Vector2i(8, row)] = true
 	return tiles
