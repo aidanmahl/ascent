@@ -1,0 +1,12 @@
+{
+  "scene": "res://scenes/main.tscn",
+  "frames": [
+    {},
+    {"move_right": true},
+    {"move_right": true, "jump": true},
+    {"move_right": true}
+  ],
+  "capture_at": [1, 2, 3],
+  "output_dir": "tools/screenshots",
+  "prefix": "example"
+}

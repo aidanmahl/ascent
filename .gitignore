@@ -5,7 +5,9 @@
 export/
 out.txt
 err.txt
-out_import.txt
-err_import.txt
+out_*.txt
+err_*.txt
 exitcode*.txt
-tools/_validate_runner*.cmd
+tools/_godot_step_runner*.cmd
+tools/screenshots/
+tools/capture/capture_config.json
