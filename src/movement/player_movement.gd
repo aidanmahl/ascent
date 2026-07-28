@@ -52,11 +52,40 @@ static func _reset(state: MovementState, spawn_position: Vector2) -> void:
 ## _apply_run, rather than inline inside _apply_gravity as before, so
 ## _apply_run can also see this frame's value instead of the previous
 ## frame's stale one (needed for the detach-grace horizontal lock).
+##
+## Milestone 4 tuning iteration 5: only actively pressing AWAY advances
+## the countdown now - neutral (no horizontal input at all) freezes it
+## wherever it is instead. Previously neutral and away were treated the
+## same, so simply letting go (not necessarily trying to leave) silently
+## spent the same finite budget as deliberately backing off, and a wall
+## cling could only persist by continuously holding into the wall - it
+## couldn't be held with no input, contradicting the documented "no
+## stamina meter, wall hold is time-limited by the cling window" intent.
+## This also gives the moment between releasing "into" and committing to
+## "away" (naturally variable human reaction time) unlimited breathing
+## room instead of quietly costing frames from the same finite window a
+## deliberate wall-jump-away then has to fire within - likely the biggest
+## contributor to that feeling inconsistent.
 static func _update_wall_attachment(state: MovementState, config: MovementConfig) -> void:
 	var pressing_into := _is_pressing_into_wall(state)
 	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
-	wall_detach = 0 if pressing_into else (wall_detach + 1)
+	if pressing_into:
+		wall_detach = 0
+	elif _is_pressing_away_from_wall(state):
+		wall_detach += 1
 	state.timers["wall_detach"] = wall_detach
+
+## Uses last_wall_side rather than on_wall_left/right directly, same
+## reasoning as _fire_wall_jump: on_wall_* reads true only while actively
+## colliding into the wall, which stops being true the instant input lets
+## go (see TileCollision) - by the time this matters (input isn't
+## "into"), on_wall_* has typically already gone false regardless of
+## whether the player is now pressing away or truly neutral.
+static func _is_pressing_away_from_wall(state: MovementState) -> bool:
+	var wall_side := _current_wall_side(state)
+	if wall_side == 0.0:
+		return false
+	return state.move_right if wall_side < 0.0 else state.move_left
 
 ## Jump decision reads timers BEFORE this frame's refresh, so the exact
 ## frame counts in SPEC.md section 10 (coyote: succeeds at 5 frames after
@@ -185,10 +214,23 @@ static func _current_wall_side(state: MovementState) -> float:
 ## into the wall right now, which isn't the grace window (that's just
 ## normal cling) - only 1..wall_detach_grace counts.
 static func _apply_run(state: MovementState, config: MovementConfig) -> void:
-	# The wall jump's imparted velocity.x is meant to carry through
-	# un-fought for wall_jump_lockout_frames - this timer was already
-	# refreshed by _apply_jump earlier this same frame.
-	if state.timers.get("wall_jump_lockout", 0) > 0:
+	# The wall jump's imparted velocity.x carries through un-fought (no
+	# input authority) for wall_jump_lockout_frames - this timer was
+	# already refreshed by _apply_jump earlier this same frame. Friction
+	# (not input) still applies during the HOLD portion of lockout,
+	# though (but not the exact frame the jump just fired, identified by
+	# the timer still reading its just-set max value - the launch value
+	# itself must come through untouched that frame): a hard freeze
+	# followed by an instant, potentially turnaround-multiplied reversal
+	# (if the player held the original into-direction the whole time)
+	# read as an abrupt stop-then-snap-back. Letting friction decay it a
+	# little first softens that transition without granting any input
+	# authority during the window.
+	var wall_jump_lockout: int = state.timers.get("wall_jump_lockout", 0)
+	if wall_jump_lockout > 0:
+		if wall_jump_lockout < config.wall_jump_lockout_frames:
+			var lockout_friction := config.ground_friction if state.on_floor else config.air_friction
+			state.velocity.x = move_toward(state.velocity.x, 0.0, lockout_friction)
 		return
 
 	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)

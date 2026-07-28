@@ -95,7 +95,7 @@ too). Replaced by `collision_width_margin_px` under Collider, below.
 | Wall cling | 13 frames of zero gravity on first touch while holding toward wall |
 | Wall jump velocity | (±4.0, -6.0) |
 | Wall jump input lockout | 8 frames of no horizontal input authority |
-| Wall detach grace | 14 frames of holding away/neutral before cling actually releases (increased 75% from 8 in milestone 4 tuning) |
+| Wall detach grace | 14 frames of actively holding away before cling actually releases (increased 75% from 8 in milestone 4 tuning) |
 | Wall coyote time | 6 frames after losing wall contact during which a wall jump still fires |
 | Wall cling entry speed cap | 4.0 px/frame max magnitude of velocity.y carried into a cling while falling or at rest |
 
@@ -145,6 +145,23 @@ input has no authority) — a commitment window, not a slow release. Vertical
 behavior (cling/slide/preserved momentum) is unaffected, and a wall jump
 remains available throughout.
 
+**Only actively pressing away advances the detach countdown — neutral (no
+horizontal input at all) does not** (milestone 4 tuning iteration 5). Cling
+persists indefinitely under neutral input, matching the "no stamina meter"
+rule below, which previously only held true while continuously pressing
+into the wall. This also removes a likely source of "wall jump away feels
+inconsistent" reports: the natural human transition time between releasing
+into and committing to away no longer quietly spends the same finite budget
+a deliberate wall-jump-away then has to fire within.
+
+**Wall jump input lockout still grants zero input authority for its full 8
+frames, but friction now applies during it** (previously velocity.x was
+completely frozen, not even decaying). If the player held the original
+into-the-wall direction the whole time, the instant lockout ended used to
+produce a sudden turnaround-multiplied reversal back toward the wall — an
+abrupt stop-then-snap-back. Friction decaying the imparted velocity during
+the hold softens that transition without granting any input authority.
+
 **No stamina meter.** Wall hold is time-limited by the cling window, not by a
 draining resource. This is Ori, not Celeste.
 
@@ -173,7 +190,7 @@ The actual collision width used for tile resolution is `collider_size.x -
 2 * collision_width_margin_px` (6px effective, vs. the 10px visual sprite) —
 height is untouched. A few pixels of visual overlap on a jump-up corner or a
 ledge edge never registers as contact at all: no nudge, no snap, no special
-case, and no asymmetry between "helps" (letting a near-miss jump through) and
+caaase, and no asymmetry between "helps" (letting a near-miss jump through) and
 "hurts" (early-dropping a player standing near a ledge) the way the old
 per-corner nudge correction did.
 

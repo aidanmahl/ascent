@@ -55,6 +55,7 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("wall_cling_preserves_slow_entry_uncapped", _test_wall_cling_preserves_slow_entry_uncapped)
 	runner.register("ground_jump_into_wall_does_not_overshoot_height", _test_ground_jump_into_wall_does_not_overshoot_height)
 	runner.register("wall_detach_grace_keeps_cling_attached", _test_wall_detach_grace_keeps_cling_attached)
+	runner.register("wall_cling_persists_indefinitely_on_neutral", _test_wall_cling_persists_indefinitely_on_neutral)
 	runner.register("wall_coyote_time_allows_late_wall_jump", _test_wall_coyote_time_allows_late_wall_jump)
 	runner.register("wall_detach_grace_locks_horizontal_movement", _test_wall_detach_grace_locks_horizontal_movement)
 	runner.register("wall_jump_during_late_grace_does_not_burn_double_jump", _test_wall_jump_during_late_grace_does_not_burn_double_jump)
@@ -301,6 +302,13 @@ func _check_action_key(action: String, expected_keycode: Key) -> String:
 ## wall_jump_lockout_frames (8) covers frames 0..7 inclusive - the launch
 ## frame counts as the first locked frame, since the timer is refreshed
 ## before _apply_run reads it that same frame.
+##
+## Milestone 4 tuning iteration 5: lockout no longer freezes vx outright -
+## friction still decays it (just not player input), so the eventual
+## input-driven reversal isn't a sudden snap from a dead-flat hold. Checks
+## the exact friction-decay curve during lockout instead of an unchanging
+## value, then confirms real (turnaround-boosted, since still opposing)
+## acceleration takes over once lockout expires.
 func _test_wall_jump_lockout() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
@@ -316,12 +324,14 @@ func _test_wall_jump_lockout() -> String:
 	if failure != "":
 		return failure
 
+	var expected := launched_vx
 	for i in range(1, 8):
-		failure = Expect.approx(history[i].velocity.x, launched_vx, "vx during wall jump lockout at frame %d should stay locked at the launch value" % i)
+		expected = move_toward(expected, 0.0, config.air_friction)
+		failure = Expect.approx(history[i].velocity.x, expected, "vx during wall jump lockout at frame %d should decay via friction, not stay frozen or respond to input" % i)
 		if failure != "":
 			return failure
 
-	return Expect.is_true(history[8].velocity.x < launched_vx, "vx at frame 8 (lockout expired) should respond to the held opposing input")
+	return Expect.is_true(history[8].velocity.x < expected, "vx at frame 8 (lockout expired) should respond to the held opposing input, decreasing further than friction alone would")
 
 ## First wall_cling_frames (13) frames of contact: velocity.y untouched by
 ## gravity (SPEC.md section 4 "zero gravity", taken literally - not a
@@ -803,6 +813,12 @@ func _test_ground_jump_into_wall_does_not_overshoot_height() -> String:
 ## held at 0 while the cling budget lasts, capped at
 ## wall_slide_max_fall_speed for the rest of grace (still attached, just
 ## past the zero-gravity portion), then uncapped once grace fully expires.
+##
+## Milestone 4 tuning iteration 5: this specifically holds AWAY (not
+## neutral) during release, since neutral no longer advances the detach
+## countdown at all (see _test_wall_cling_persists_indefinitely_on_neutral
+## below) - this test is about the finite countdown that still applies
+## when the player is actually backing off.
 func _test_wall_detach_grace_keeps_cling_attached() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
@@ -812,7 +828,7 @@ func _test_wall_detach_grace_keeps_cling_attached() -> String:
 		{"on_wall_left": true, "move_left": true},
 	]
 	for i in range(config.wall_detach_grace):
-		frames.append({"on_wall_left": false, "move_left": false})
+		frames.append({"on_wall_left": false, "move_left": false, "move_right": true})
 
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
@@ -831,9 +847,28 @@ func _test_wall_detach_grace_keeps_cling_attached() -> String:
 
 	var past_grace_frames: Array[Dictionary] = []
 	for j in range(20):
-		past_grace_frames.append({"on_wall_left": false, "move_left": false})
+		past_grace_frames.append({"on_wall_left": false, "move_left": false, "move_right": true})
 	var post_history := InputPlayback.run(state, config, past_grace_frames, PlayerMovement.process)
-	return Expect.is_true(post_history[-1].velocity.y > config.wall_slide_max_fall_speed + 0.001, "vy well after grace has fully expired should exceed the wall-slide cap - no longer attached")
+	return Expect.is_true(post_history[-1].velocity.y > config.wall_slide_max_fall_speed + 0.001, "vy well after grace has fully expired (holding away the whole time) should exceed the wall-slide cap - no longer attached")
+
+## Milestone 4 tuning iteration 5: neutral (no horizontal input at all)
+## must NOT advance the detach countdown - only actively pressing away
+## does. Holds the wall, then goes fully neutral for far longer than
+## wall_detach_grace would normally allow, and confirms the player is
+## still attached (wall-slide-capped, not free-falling) indefinitely -
+## matches the documented "no stamina meter" design intent, which
+## previously only held true while continuously pressing into the wall.
+func _test_wall_cling_persists_indefinitely_on_neutral() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+
+	var frames: Array[Dictionary] = [{"on_wall_left": true, "move_left": true}]
+	for i in range(config.wall_detach_grace * 3):
+		frames.append({"on_wall_left": false, "move_left": false})
+
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	return Expect.is_true(history[-1].velocity.y <= config.wall_slide_max_fall_speed + 0.001, "vy should stay capped at wall_slide_max_fall_speed indefinitely under neutral input, well beyond what wall_detach_grace alone would allow")
 
 ## Milestone 4 tuning iteration 1, bug 4 (part 2): a wall jump used to
 ## require actually touching the wall the exact frame jump is pressed.
@@ -859,7 +894,10 @@ func _test_wall_coyote_time_allows_late_wall_jump() -> String:
 
 ## call index 0 = last frame actually touching the wall. call index
 ## (frames_after_losing_contact + 1) is where the press lands, mirroring
-## _run_coyote_scenario's indexing for the ground coyote test.
+## _run_coyote_scenario's indexing for the ground coyote test. Holds AWAY
+## (not neutral) after losing contact - milestone 4 tuning iteration 5
+## made neutral no longer advance the detach countdown at all, so this
+## needs genuine away-holding to test the countdown actually expiring.
 func _run_wall_coyote_scenario(config: MovementConfig, frames_after_losing_contact: int) -> float:
 	var state := MovementState.new()
 	var press_at_call := frames_after_losing_contact + 1
@@ -867,7 +905,7 @@ func _run_wall_coyote_scenario(config: MovementConfig, frames_after_losing_conta
 
 	var base: Array[Dictionary] = [{"on_wall_left": true, "move_left": true}]
 	for i in range(total_frames - 1):
-		base.append({"on_wall_left": false, "move_left": false})
+		base.append({"on_wall_left": false, "move_left": false, "move_right": true})
 
 	var jump_pulse := InputPlayback.pulse("jump_pressed", press_at_call, total_frames)
 	var frames := InputPlayback.merge(base, jump_pulse)
