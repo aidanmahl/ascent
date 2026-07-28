@@ -36,6 +36,8 @@ func _run() -> void:
 
 	var target: Node = load(config.scene).instantiate()
 	add_child(target)
+	await get_tree().process_frame
+	await _dismiss_start_overlay()
 
 	var frames: Array = config.get("frames", [])
 	# JSON.parse_string returns every number as float, including the
@@ -63,6 +65,24 @@ func _run() -> void:
 		if capture_at.has(frame_index):
 			await get_tree().process_frame
 			_capture(output_dir, prefix, frame_index)
+
+## Scenes loaded here may include a click-to-start overlay (real browsers
+## gate audio behind a user gesture - see CLAUDE.md "Target platform").
+## Synthesize the same gesture a human tester would give so scripted
+## captures still show gameplay instead of a permanently-visible overlay.
+## Harmless no-op if the loaded scene has no such overlay.
+func _dismiss_start_overlay() -> void:
+	var viewport := get_viewport()
+	var pos := viewport.get_visible_rect().size / 2.0
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = pos
+	Input.parse_input_event(press)
+	var release := press.duplicate()
+	release.pressed = false
+	Input.parse_input_event(release)
+	await get_tree().process_frame
 
 func _capture(output_dir: String, prefix: String, frame_index: int) -> void:
 	var image := get_viewport().get_texture().get_image()
