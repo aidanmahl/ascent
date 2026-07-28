@@ -5,3 +5,5 @@
 export/
 out.txt
 err.txt
+exitcode.txt
+tools/_validate_runner.cmd
