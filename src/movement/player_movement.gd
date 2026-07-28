@@ -357,7 +357,7 @@ static func _refill_abilities(state: MovementState) -> void:
 		state.dash_available = true
 
 static func _resolve_collision(state: MovementState, config: MovementConfig, solid_tiles: Dictionary) -> void:
-	var result := TileCollision.resolve(state.position, state.velocity, config.collider_size, solid_tiles, config.tile_size, config.corner_correction_px)
+	var result := TileCollision.resolve(state.position, state.velocity, config.collider_size, solid_tiles, config.tile_size, config.collision_width_margin_px)
 	state.position = result.position
 	state.velocity = result.velocity
 	state.on_floor = result.on_floor

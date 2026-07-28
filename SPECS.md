@@ -30,7 +30,9 @@ Restating from `CLAUDE.md` because it governs every milestone:
 - Same rule for enemy AI and projectile motion: pure stepping functions over
   state, so a headless test can run 10,000 frames in milliseconds.
 - 60 physics ticks/sec. All tuning values in **frames** and **pixels**.
-- Tile size: **16px**. Player collision box: **10 wide × 16 tall**.
+- Tile size: **16px**. Player collision box: **10 wide × 16 tall** (visual
+  sprite size - the actual collision width used for tile resolution is
+  narrower, see `collision_width_margin_px` in section 4).
 
 ---
 
@@ -59,10 +61,10 @@ them as the initial state of a knob, not as a requirement.
 ### Run
 | Param | Value |
 |---|---|
-| Max run speed | 2.5 px/frame |
-| Ground acceleration | 0.25 px/frame² |
+| Max run speed | 2.125 px/frame (reduced 15% from 2.5 in milestone 4 tuning) |
+| Ground acceleration | 0.2125 px/frame² (reduced 15% from 0.25) |
 | Ground friction | 0.40 px/frame² |
-| Air acceleration | 0.18 px/frame² |
+| Air acceleration | 0.153 px/frame² (reduced 15% from 0.18) |
 | Air friction | 0.10 px/frame² |
 | Turnaround multiplier | 1.8× accel when input opposes velocity |
 
@@ -77,9 +79,14 @@ them as the initial state of a knob, not as a requirement.
 | Apex hang | gravity × 0.60 while `abs(vy) < 1.0` |
 | Coyote time | 6 frames |
 | Jump buffer | 8 frames |
-| Corner correction | up to 4px horizontal nudge around ledge corners |
 
 Double jump refills on ground contact and on wall contact.
+
+**Corner correction was removed in milestone 4 tuning iteration 3** (the
+nudge-based version only handled the ceiling case, so it never made jumping
+into a platform corner more forgiving anyway, and it separately caused an
+early-ledge-drop bug by nudging players off ledges during floor resolution
+too). Replaced by `collision_width_margin_px` under Collider, below.
 
 ### Wall
 | Param | Value |
@@ -135,6 +142,20 @@ draining resource. This is Ori, not Celeste.
 Dash cancels on wall contact. Dashing into the ground at a downward angle
 preserves horizontal speed — this is the seed of an emergent speed tech and
 is intentional. Do not "fix" it.
+
+### Collider
+| Param | Value |
+|---|---|
+| Collider size (visual) | 10 × 16 px |
+| Collision width margin | 2.0 px per side |
+
+The actual collision width used for tile resolution is `collider_size.x -
+2 * collision_width_margin_px` (6px effective, vs. the 10px visual sprite) —
+height is untouched. A few pixels of visual overlap on a jump-up corner or a
+ledge edge never registers as contact at all: no nudge, no snap, no special
+case, and no asymmetry between "helps" (letting a near-miss jump through) and
+"hurts" (early-dropping a player standing near a ledge) the way the old
+per-corner nudge correction did.
 
 ---
 
@@ -284,7 +305,10 @@ milestone is complete.
 - Dash refill on ground and wall contact; no refill mid-air otherwise.
 - Double jump available once per airborne period.
 - Wall jump lockout: horizontal input has no authority for 8 frames.
-- Corner correction: a jump clipping a corner by ≤4px passes through.
+- Collision width margin: a jump clipping a corner within the margin passes
+  through cleanly (no ceiling hit); a bigger overlap still blocks. A ledge
+  keeps the player grounded as long as any part of the margin-narrowed hitbox
+  still overlaps solid ground, and drops them once fully clear.
 - Player never tunnels through a tile at maximum possible speed.
 
 ### Combat

@@ -6,10 +6,10 @@ extends Resource
 ## tuning knobs, not final numbers.
 
 @export_group("Run")
-@export var max_run_speed: float = 2.5
-@export var ground_acceleration: float = 0.25
+@export var max_run_speed: float = 2.125
+@export var ground_acceleration: float = 0.2125
 @export var ground_friction: float = 0.40
-@export var air_acceleration: float = 0.18
+@export var air_acceleration: float = 0.153
 @export var air_friction: float = 0.10
 ## Accel multiplier applied when input opposes current velocity.
 @export var turnaround_multiplier: float = 1.8
@@ -25,9 +25,6 @@ extends Resource
 @export var apex_hang_threshold: float = 1.0
 @export var coyote_frames: int = 6
 @export var jump_buffer_frames: int = 8
-## Max horizontal nudge (px) used to slip the player past a ledge corner
-## instead of blocking a near-miss vertical collision.
-@export var corner_correction_px: float = 4.0
 @export var double_jump_velocity: float = -5.8
 
 @export_group("Dash")
@@ -77,3 +74,11 @@ extends Resource
 @export_group("Collider")
 @export var collider_size: Vector2 = Vector2(10, 16)
 @export var tile_size: int = 16
+## Milestone 4 tuning iteration 3: replaced the old corner-correction
+## nudge system (see TileCollision) with this - the actual collision width
+## is collider_size.x minus this margin on each side, narrower than the
+## visual sprite. A few pixels of visual overlap on a jump-up corner or a
+## ledge edge never registers as contact at all, so near-misses just pass
+## through instead of needing a special-case nudge. Horizontal only;
+## vertical collision uses the full collider_size.y unchanged.
+@export var collision_width_margin_px: float = 2.0

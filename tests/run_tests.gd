@@ -28,8 +28,10 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("jump_buffer_6_frames_before_landing_fires_on_landing", _test_jump_buffer_fires_on_landing)
 	runner.register("jump_buffer_beyond_window_does_not_fire", _test_jump_buffer_expires)
 	runner.register("variable_height_early_release_peaks_lower_than_held", _test_variable_height)
-	runner.register("corner_correction_small_clip_passes_through", _test_corner_correction_passes)
-	runner.register("corner_correction_large_overlap_still_blocks", _test_corner_correction_blocks)
+	runner.register("jump_corner_near_miss_passes_through", _test_jump_corner_near_miss_passes_through)
+	runner.register("jump_corner_large_overlap_still_blocks", _test_jump_corner_large_overlap_still_blocks)
+	runner.register("ledge_forgiveness_keeps_grounded_while_any_overlap", _test_ledge_forgiveness_keeps_grounded_while_any_overlap)
+	runner.register("ledge_forgiveness_still_falls_once_fully_clear", _test_ledge_forgiveness_still_falls_once_fully_clear)
 	runner.register("never_tunnels_through_floor_at_max_fall_speed", _test_no_tunneling_at_max_fall_speed)
 	runner.register("input_map_binds_move_and_jump_to_spec_keys", _test_input_map_bindings)
 	runner.register("wall_jump_lockout_blocks_input_for_8_frames", _test_wall_jump_lockout)
@@ -152,39 +154,79 @@ func _peak_height(history: Array[MovementState]) -> float:
 		min_y = minf(min_y, s.position.y)
 	return min_y
 
-## A single tile at column 1, row 0 sits just beside the player's straight-
-## up path. The player's AABB pokes only 2px into that column - within
-## corner_correction_px (4) - so it should nudge sideways and keep rising
-## instead of getting blocked underneath the tile.
-func _test_corner_correction_passes() -> String:
+## Milestone 4 tuning iteration 3: replaced the old nudge-based corner
+## correction (ceiling-only, and it separately caused an early-ledge-drop
+## bug by nudging players off ledges during floor resolution too) with a
+## horizontal-only collision_width_margin_px (2px per side) - the actual
+## collision width is narrower than the visual 10px sprite, so a few
+## pixels of visual overlap never registers as contact at all, on any
+## axis, for any reason. A single tile at column 1, row 0 sits just beside
+## the player's straight-up path. With the full 10px visual width the
+## player's right edge would poke 2px into that column; with the narrower
+## effective width (half = 5 - 2 = 3) it clears with zero overlap - no
+## nudge needed, it just was never touching.
+func _test_jump_corner_near_miss_passes_through() -> String:
 	var config := _default_config()
 	var solid_tiles := {Vector2i(1, 0): true}
 	var state := MovementState.new()
-	state.position = Vector2(13, 24)  # right edge at 18: 2px into tile [16,32)
+	state.position = Vector2(13, 24)  # narrow right edge at 16: exactly clears tile [16,32)
 	state.velocity = Vector2(0, config.jump_velocity)
 
 	var frames := InputPlayback.hold({}, 5)
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
 
-	var failure := Expect.is_true(history[-1].position.y < 0.0, "player should have risen past y=0 after clipping the corner, got y=%s" % history[-1].position.y)
+	var failure := Expect.is_true(history[-1].position.y < 0.0, "player should have risen past y=0, got y=%s" % history[-1].position.y)
 	if failure != "":
 		return failure
-	return Expect.is_false(history[0].on_ceiling, "first frame should not register as a ceiling hit (corner correction should have applied instead)")
+	return Expect.is_false(history[0].on_ceiling, "first frame should not register as a ceiling hit - the margin-narrowed hitbox never actually overlapped the tile")
 
-## Same setup, but the player's AABB overlaps the blocking tile by 9px -
-## beyond corner_correction_px (4) - so it must block normally rather than
-## nudge through.
-func _test_corner_correction_blocks() -> String:
+## Same setup, but the player's narrow (margin-applied) hitbox still
+## overlaps the blocking tile by a full 6px - well beyond what the margin
+## forgives - so it must block normally.
+func _test_jump_corner_large_overlap_still_blocks() -> String:
 	var config := _default_config()
 	var solid_tiles := {Vector2i(1, 0): true}
 	var state := MovementState.new()
-	state.position = Vector2(20, 24)  # right edge at 25: 9px into tile [16,32)
+	state.position = Vector2(20, 24)  # narrow edges [17,23]: solidly inside tile [16,32)
 	state.velocity = Vector2(0, config.jump_velocity)
 
 	var frames := InputPlayback.hold({}, 1)
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
 
-	return Expect.is_true(history[0].on_ceiling, "large overlap should block as a normal ceiling hit, not corner-correct")
+	return Expect.is_true(history[0].on_ceiling, "large overlap should still block as a normal ceiling hit")
+
+## The other side of the same margin: standing near a ledge, the player
+## should stay grounded as long as ANY part of the (margin-narrowed)
+## hitbox still overlaps the floor tile below - not just most of it. A
+## floor tile at column 0 spans x in [0,16); standing at x=18.9 puts the
+## narrow left edge at 15.9, a hair still over the tile.
+func _test_ledge_forgiveness_keeps_grounded_while_any_overlap() -> String:
+	var config := _default_config()
+	var solid_tiles := {Vector2i(0, 5): true}
+	var state := MovementState.new()
+	state.position = Vector2(18.9, float(5 * config.tile_size) - config.collider_size.y * 0.5)
+	state.velocity = Vector2(0, 1.0)
+
+	var frames := InputPlayback.hold({}, 1)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	return Expect.is_true(history[0].on_floor, "any overlap with the ledge, even a sliver, should keep the player grounded")
+
+## Same setup, moved 0.2px further out so the narrow hitbox has fully
+## cleared the tile (narrow left edge at 16.1, past the tile's 16px
+## boundary) - the margin forgives near-misses, it doesn't hold you up
+## indefinitely once you're actually clear.
+func _test_ledge_forgiveness_still_falls_once_fully_clear() -> String:
+	var config := _default_config()
+	var solid_tiles := {Vector2i(0, 5): true}
+	var state := MovementState.new()
+	state.position = Vector2(19.1, float(5 * config.tile_size) - config.collider_size.y * 0.5)
+	state.velocity = Vector2(0, 1.0)
+
+	var frames := InputPlayback.hold({}, 1)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	return Expect.is_false(history[0].on_floor, "fully clear of the ledge (even accounting for the margin) should fall, not stay held up")
 
 ## Drops the player from max fall speed toward a floor and asserts the
 ## resolved position never sinks below the floor's surface at any frame,

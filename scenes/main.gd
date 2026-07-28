@@ -14,7 +14,21 @@ extends Node2D
 ## section, then chains them so nothing needs a restart to reach.
 
 const TILE_SIZE := 16
-const TILE_COLOR := Color(0.55, 0.4, 0.25)
+## Checkerboard (alternating by col+row parity) instead of a flat color -
+## purely a visual speed reference, per your request; doesn't affect
+## collision at all.
+const TILE_COLOR_A := Color(0.55, 0.4, 0.25)
+const TILE_COLOR_B := Color(0.47, 0.33, 0.2)
+
+## Background checkerboard, coarser than the tile grid (64px cells) so it
+## doesn't need thousands of nodes to cover the whole gym - still a clear
+## motion reference since it doesn't need to align with the tile grid.
+const BG_CELL_SIZE := 64
+const BG_COLOR_A := Color(0.15, 0.15, 0.18)
+const BG_COLOR_B := Color(0.11, 0.11, 0.14)
+## Extra cells of background beyond the level's own bounding box, so it
+## doesn't end abruptly right at the edge of the geometry.
+const BG_MARGIN_CELLS := 4
 
 ## No room system yet (milestone 7), so "reset" - R, or falling below
 ## KILL_PLANE_Y - means this level spawn point, not a room start.
@@ -32,6 +46,7 @@ func _ready() -> void:
 	player.spawn_point = SPAWN_POINT
 	player.kill_plane_y = KILL_PLANE_Y
 	player.position = SPAWN_POINT
+	_spawn_background(solid_tiles)
 	_spawn_visuals(solid_tiles)
 
 ## Row numbers decrease upward (Godot's Y-down convention) - the level
@@ -118,10 +133,58 @@ func _fill_rect(tiles: Dictionary, col0: int, col1: int, row0: int, row1: int) -
 		for row in range(row0, row1 + 1):
 			tiles[Vector2i(col, row)] = true
 
+## Added to the tree before _spawn_visuals's tiles, so it draws behind
+## them (Node2D children draw in sibling order). Covers the level's own
+## bounding box plus BG_MARGIN_CELLS on every side.
+func _spawn_background(tiles: Dictionary) -> void:
+	if tiles.is_empty():
+		return
+	var min_col := 0
+	var max_col := 0
+	var min_row := 0
+	var max_row := 0
+	var first := true
+	for coord: Vector2i in tiles:
+		if first:
+			min_col = coord.x
+			max_col = coord.x
+			min_row = coord.y
+			max_row = coord.y
+			first = false
+		else:
+			min_col = mini(min_col, coord.x)
+			max_col = maxi(max_col, coord.x)
+			min_row = mini(min_row, coord.y)
+			max_row = maxi(max_row, coord.y)
+
+	var min_x := min_col * TILE_SIZE
+	var max_x := (max_col + 1) * TILE_SIZE
+	var min_y := min_row * TILE_SIZE
+	var max_y := (max_row + 1) * TILE_SIZE
+
+	var col_start := floori(float(min_x) / BG_CELL_SIZE) - BG_MARGIN_CELLS
+	var col_end := ceili(float(max_x) / BG_CELL_SIZE) + BG_MARGIN_CELLS
+	var row_start := floori(float(min_y) / BG_CELL_SIZE) - BG_MARGIN_CELLS
+	var row_end := ceili(float(max_y) / BG_CELL_SIZE) + BG_MARGIN_CELLS
+
+	for col in range(col_start, col_end):
+		for row in range(row_start, row_end):
+			var rect := ColorRect.new()
+			rect.color = BG_COLOR_A if (col + row) % 2 == 0 else BG_COLOR_B
+			rect.size = Vector2(BG_CELL_SIZE, BG_CELL_SIZE)
+			rect.position = Vector2(col * BG_CELL_SIZE, row * BG_CELL_SIZE)
+			# Behind everything - sibling order alone isn't enough once
+			# this covers the whole frame instead of leaving empty space,
+			# it would otherwise draw over the player (added earlier in
+			# main.tscn, but add_child() here appends after it).
+			rect.z_index = -2
+			add_child(rect)
+
 func _spawn_visuals(tiles: Dictionary) -> void:
 	for coord: Vector2i in tiles:
 		var rect := ColorRect.new()
-		rect.color = TILE_COLOR
+		rect.color = TILE_COLOR_A if (coord.x + coord.y) % 2 == 0 else TILE_COLOR_B
 		rect.size = Vector2(TILE_SIZE, TILE_SIZE)
 		rect.position = Vector2(coord.x * TILE_SIZE, coord.y * TILE_SIZE)
+		rect.z_index = -1  # above the background, still behind the player
 		add_child(rect)

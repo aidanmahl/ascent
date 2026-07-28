@@ -4,8 +4,8 @@ class_name TileCollision
 ## lookups - solid geometry is a plain Dictionary[Vector2i, bool] the
 ## caller builds however it likes (from a real TileMapLayer at runtime, or
 ## synthetic in tests). This is what makes coyote time, jump buffer, and
-## corner correction testable headlessly: the same pure function runs in
-## the game and in a test with a hand-built solid_tiles dict.
+## collision resolution testable headlessly: the same pure function runs
+## in the game and in a test with a hand-built solid_tiles dict.
 ##
 ## Discrete (non-swept) resolution: move the full axis delta, then clamp
 ## back on overlap. This only avoids tunneling because every movement
@@ -15,15 +15,28 @@ class_name TileCollision
 ##
 ## The collider AABB is centered on `position` (matches the player's
 ## visual, which is centered on its Node2D position).
+##
+## Milestone 4 tuning iteration 3: replaced the old per-corner "nudge"
+## correction (which only handled the ceiling case, made jumping into a
+## platform corner feel unforgiving anyway since it never applied to the
+## X axis, AND actively broke ledge-standing by nudging players off an
+## edge during floor resolution) with a horizontal-only margin: the actual
+## collision width used here is collider_size.x minus
+## collision_width_margin_px on each side - narrower than the visual
+## sprite, so a few pixels of visual overlap on either a jump-up corner or
+## a ledge edge never registers as contact at all. No snap, no special
+## case, no asymmetry between "helps" and "hurts" - one number, applied
+## uniformly to both axes' horizontal extent. Height is untouched.
 
 const EPS := 0.01
 
-static func resolve(position: Vector2, velocity: Vector2, collider_size: Vector2, solid_tiles: Dictionary, tile_size: int, corner_correction_px: float) -> Dictionary:
+static func resolve(position: Vector2, velocity: Vector2, collider_size: Vector2, solid_tiles: Dictionary, tile_size: int, collision_width_margin_px: float) -> Dictionary:
 	var pos := position
 	var vel := velocity
+	var size := Vector2(maxf(collider_size.x - collision_width_margin_px * 2.0, 1.0), collider_size.y)
 
 	pos.x += vel.x
-	var x_result := _resolve_x(pos, collider_size, vel.x, solid_tiles, tile_size)
+	var x_result := _resolve_x(pos, size, vel.x, solid_tiles, tile_size)
 	pos.x = x_result.x
 	var on_wall_left := false
 	var on_wall_right := false
@@ -35,7 +48,7 @@ static func resolve(position: Vector2, velocity: Vector2, collider_size: Vector2
 		vel.x = 0.0
 
 	pos.y += vel.y
-	var y_result := _resolve_y(pos, collider_size, vel.y, solid_tiles, tile_size, corner_correction_px)
+	var y_result := _resolve_y(pos, size, vel.y, solid_tiles, tile_size)
 	pos = y_result.position
 	var on_floor := false
 	var on_ceiling := false
@@ -79,7 +92,7 @@ static func _resolve_x(pos: Vector2, size: Vector2, vel_x: float, solid_tiles: D
 
 	return {"x": pos.x, "collided": false}
 
-static func _resolve_y(pos: Vector2, size: Vector2, vel_y: float, solid_tiles: Dictionary, tile_size: int, corner_correction_px: float) -> Dictionary:
+static func _resolve_y(pos: Vector2, size: Vector2, vel_y: float, solid_tiles: Dictionary, tile_size: int) -> Dictionary:
 	if vel_y == 0.0:
 		return {"position": pos, "collided": false}
 
@@ -95,18 +108,14 @@ static func _resolve_y(pos: Vector2, size: Vector2, vel_y: float, solid_tiles: D
 	else:
 		row = _to_tile(pos.y - half.y + EPS, tile_size)
 
-	var blocking_cols: Array[int] = []
+	var blocking := false
 	for col in range(col_min, col_max + 1):
 		if solid_tiles.has(Vector2i(col, row)):
-			blocking_cols.append(col)
+			blocking = true
+			break
 
-	if blocking_cols.is_empty():
+	if not blocking:
 		return {"position": pos, "collided": false}
-
-	if blocking_cols.size() == 1:
-		var corrected := _try_corner_correction(pos, half, blocking_cols[0], row, left, right, solid_tiles, tile_size, corner_correction_px)
-		if corrected.corrected:
-			return {"position": corrected.position, "collided": false}
 
 	var result_pos := pos
 	if vel_y > 0.0:
@@ -114,35 +123,3 @@ static func _resolve_y(pos: Vector2, size: Vector2, vel_y: float, solid_tiles: D
 	else:
 		result_pos.y = (row + 1) * tile_size + half.y
 	return {"position": result_pos, "collided": true}
-
-## If the AABB only clips a single blocking tile by <= corner_correction_px
-## on one side, and the tile beside it (across the AABB's full height) is
-## clear, nudge sideways out of the corner instead of blocking.
-static func _try_corner_correction(pos: Vector2, half: Vector2, blocking_col: int, row: int, left: float, right: float, solid_tiles: Dictionary, tile_size: int, corner_correction_px: float) -> Dictionary:
-	var tile_left := float(blocking_col * tile_size)
-	var tile_right := tile_left + tile_size
-	var overlap_from_left := right - tile_left
-	var overlap_from_right := tile_right - left
-
-	var nudge := 0.0
-	var nudge_dir := 0
-	if overlap_from_left <= corner_correction_px and overlap_from_left <= overlap_from_right:
-		nudge = overlap_from_left
-		nudge_dir = -1
-	elif overlap_from_right <= corner_correction_px:
-		nudge = overlap_from_right
-		nudge_dir = 1
-
-	if nudge <= 0.0:
-		return {"corrected": false}
-
-	var nudge_col := blocking_col + nudge_dir
-	var row_min := _to_tile(pos.y - half.y + EPS, tile_size)
-	var row_max := _to_tile(pos.y + half.y - EPS, tile_size)
-	for r in range(row_min, row_max + 1):
-		if solid_tiles.has(Vector2i(nudge_col, r)):
-			return {"corrected": false}
-
-	var corrected_pos := pos
-	corrected_pos.x += float(nudge_dir) * nudge
-	return {"corrected": true, "position": corrected_pos}
