@@ -29,10 +29,17 @@
 - Placeholder art only: colored rectangles. Keep visuals decoupled from logic.
 
 ## Process safety
-- Never invoke `godot` or `godot_console` directly. Always go through
+- Never invoke `godot` or `godot_console` directly. unless necessary 
+  to use the screenshot tool. Otherwise, always go through
   `tools\validate.cmd`, which enforces a hard timeout.
 - Any headless Godot scene you write MUST call `get_tree().quit(code)`
   unconditionally, and MUST include a watchdog Timer that force-quits.
 - A hang is a failure. If a command has not returned in two minutes,
   something is wrong — do not wait longer.
 
+## Target platform
+- Primary target is a browser build (Godot Web export, Compatibility renderer).
+- No threads. Assume single-threaded WebAssembly.
+- Audio must not play before a user gesture. A click-to-start screen is required.
+- `user://` writes are async on web. Never assume a save has flushed.
+- No OS file dialogs, no external process calls, no absolute filesystem paths.

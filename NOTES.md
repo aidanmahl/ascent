@@ -96,11 +96,6 @@ Roughly in order of "likely to actually matter tomorrow" first.
    Re-check this invariant (there's a test asserting it explicitly) if any
    future speed value approaches or exceeds 16.
 
-10. **`CLAUDE.md`/`PROMPT.md` say `SPEC.md`; the actual file is
-    `SPECS.md`.** Flagged since milestone 0, never resolved either way
-    (not renamed, not edited). Cosmetic, but should get an actual decision
-    at some point instead of just recurring in every status note.
-
 ## Standing rule worth remembering (bit us once already)
 
 Collision flags (`on_floor`, `on_wall_left/right`, `on_ceiling`) are

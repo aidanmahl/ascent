@@ -1,0 +1,23 @@
+{
+  "model": "opusplan",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "type STATUS.md 2>nul && git log --oneline -5" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "tools\\validate.cmd" } ] }
+    ]
+    
+  },
+  "permissions": {
+  "allow": [
+    "Bash(tools\\validate.cmd)",
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git status)",
+    "Bash(git log:*)",
+    "Edit",
+    "Write"
+  ]
+    }
+}

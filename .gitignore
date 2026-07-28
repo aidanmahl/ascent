@@ -11,3 +11,6 @@ exitcode*.txt
 tools/_godot_step_runner*.cmd
 tools/screenshots/
 tools/capture/capture_config.json
+.idea/
+nul
+.claude/settings.local.json
