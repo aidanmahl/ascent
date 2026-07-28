@@ -4,16 +4,17 @@
 [ext_resource type="Resource" path="res://src/movement/default_movement_config.tres" id="2"]
 
 [sub_resource type="RectangleShape2D" id="1"]
-size = Vector2(16, 16)
+size = Vector2(10, 16)
 
 [node name="Player" type="CharacterBody2D"]
+position = Vector2(0, 100)
 script = ExtResource("1")
 config = ExtResource("2")
 
 [node name="Sprite" type="ColorRect" parent="."]
-offset_left = -8.0
+offset_left = -5.0
 offset_top = -8.0
-offset_right = 8.0
+offset_right = 5.0
 offset_bottom = 8.0
 color = Color(1, 0, 0, 1)
 
