@@ -47,7 +47,8 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("dash_exit_retains_upward_vertical_velocity", _test_dash_exit_retains_upward_vertical_velocity)
 	runner.register("dash_cancels_on_wall_contact_and_refills", _test_dash_cancels_on_wall_contact_and_refills)
 	runner.register("dash_cooldown_blocks_second_dash_for_exactly_6_frames", _test_dash_cooldown_blocks_second_dash)
-	runner.register("wall_cling_preserves_velocity_on_entry", _test_wall_cling_preserves_velocity_on_entry)
+	runner.register("wall_cling_no_freeze_while_rising", _test_wall_cling_no_freeze_while_rising)
+	runner.register("wall_cling_starts_once_rising_stops", _test_wall_cling_starts_once_rising_stops)
 	runner.register("wall_cling_preserves_slow_entry_uncapped", _test_wall_cling_preserves_slow_entry_uncapped)
 	runner.register("ground_jump_into_wall_does_not_overshoot_height", _test_ground_jump_into_wall_does_not_overshoot_height)
 	runner.register("wall_detach_grace_keeps_cling_attached", _test_wall_detach_grace_keeps_cling_attached)
@@ -578,23 +579,61 @@ func _test_dash_cooldown_blocks_second_dash() -> String:
 
 ## Milestone 4 tuning iteration 2: this test used to assert the opposite
 ## (velocity.y arrested to 0 on cling entry - iteration 1's fix for the
-## superjump bug). Inverted per iteration 2: zeroing on entry made
-## mistiming a running jump into a wall corner kill all momentum instead
-## of letting it bump-and-keep-rising, which felt wrong, so cling once
-## again preserves whatever velocity.y the player arrived with - up to
-## wall_cling_entry_speed_cap. A fresh jump's -6.5 exceeds that cap, so it
-## clamps down to it rather than staying at the full -6.5 (that's what
-## bounds the reintroduced superjump - see
-## ground_jump_into_wall_does_not_overshoot_height).
-func _test_wall_cling_preserves_velocity_on_entry() -> String:
+## superjump bug). Iteration 2 went through two more attempts before this
+## one: first preserving entry velocity outright (reopened the superjump -
+## freezing a still-decelerating velocity for a fixed window adds height a
+## naturally-decaying jump wouldn't have covered), then capping it
+## (bounded the overshoot but didn't fix the actual mechanism). This is
+## the mechanism-level fix: while attached and still rising, gravity
+## behaves EXACTLY as it would off the wall - no freeze, no cap at all.
+## Proved here by running the same starting velocity attached vs.
+## unattached and requiring the two trajectories match frame-for-frame,
+## not just "close enough".
+func _test_wall_cling_no_freeze_while_rising() -> String:
+	var config := _default_config()
+
+	var attached_state := MovementState.new()
+	attached_state.velocity = Vector2(0, -6.5)
+	var attached_frames := InputPlayback.hold({"on_wall_left": true, "move_left": true}, 10)
+	var attached_history := InputPlayback.run(attached_state, config, attached_frames, PlayerMovement.process)
+
+	var free_state := MovementState.new()
+	free_state.velocity = Vector2(0, -6.5)
+	var free_frames := InputPlayback.hold({}, 10)
+	var free_history := InputPlayback.run(free_state, config, free_frames, PlayerMovement.process)
+
+	for i in range(10):
+		var failure := Expect.approx(attached_history[i].velocity.y, free_history[i].velocity.y, "vy while still rising against a wall at frame %d should match the unattached case exactly, not be frozen or capped" % i)
+		if failure != "":
+			return failure
+	return ""
+
+## Once a rising player actually stops ascending (vy crosses to >= 0) while
+## still attached, cling should catch them there - velocity.y held
+## constant for wall_cling_frames frames, same as any other cling entry.
+func _test_wall_cling_starts_once_rising_stops() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
-	state.velocity = Vector2(0, -6.5)
+	state.velocity = Vector2(0, -1.0)
 
-	var frames := InputPlayback.hold({"on_wall_left": true, "move_left": true}, 3)
+	var frames := InputPlayback.hold({"on_wall_left": true, "move_left": true}, 30)
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
-	return Expect.approx(history[0].velocity.y, -config.wall_cling_entry_speed_cap, "vy on the first frame of wall contact should clamp to -wall_cling_entry_speed_cap, not be arrested to 0 or left at the full -6.5")
+	var apex_frame := -1
+	for i in range(history.size()):
+		if history[i].velocity.y >= 0.0:
+			apex_frame = i
+			break
+	var setup_failure := Expect.is_true(apex_frame >= 0, "test setup problem: player should have stopped rising within 30 frames")
+	if setup_failure != "":
+		return setup_failure
+
+	var held_value: float = history[apex_frame].velocity.y
+	for i in range(apex_frame, mini(apex_frame + config.wall_cling_frames, history.size())):
+		var failure := Expect.approx(history[i].velocity.y, held_value, "vy should stay held at %s once cling starts (frame %d)" % [held_value, i])
+		if failure != "":
+			return failure
+	return ""
 
 ## Entry speeds under wall_cling_entry_speed_cap should pass through
 ## untouched - the cap only clips fast entries, it doesn't replace normal
@@ -618,14 +657,14 @@ func _test_wall_cling_preserves_slow_entry_uncapped() -> String:
 ## still-strongly-upward velocity.y for up to wall_cling_frames more frames
 ## instead of arresting it, which looked like a second, much bigger jump.
 ##
-## Milestone 4 tuning iteration 2 deliberately reopened this: cling once
-## again preserves entry velocity (arresting it made grazing a wall corner
-## mid-jump kill all momentum, which felt wrong) - but only up to
-## wall_cling_entry_speed_cap, which bounds the overshoot instead of
-## eliminating it. So this no longer asserts parity with an ordinary jump;
-## it asserts the overshoot stays within what the cap analytically allows
-## (roughly baseline + cap sustained for the whole cling window) rather
-## than being unbounded. This test locks in the visible symptom (total
+## Milestone 4 tuning iteration 2 went through preserve-outright (reopened
+## this bug) and preserve-with-a-cap (bounded it but didn't fix the actual
+## mechanism) before landing on the real fix: while still rising, gravity
+## is never frozen at all (see _apply_gravity) - cling only catches you
+## once you stop ascending. Since this player is still climbing when they
+## first touch the wall, that means the whole ascent behaves exactly like
+## an ordinary jump, so this asserts parity again (tight tolerance), not
+## just a bounded overshoot. This test locks in the visible symptom (total
 ## rise) rather than the internal mechanism, against a real wall placed
 ## flush against the player one pixel away, so contact registers almost
 ## immediately after leaving the ground while still ascending fast.
@@ -666,15 +705,7 @@ func _test_ground_jump_into_wall_does_not_overshoot_height() -> String:
 
 	var peak: float = _peak_height(history)
 	var rise: float = start_y - peak
-	# Analytical ceiling, not a hardcoded number: the cling window can add
-	# at most wall_cling_entry_speed_cap px of extra rise per frame for
-	# wall_cling_frames frames on top of an ordinary jump's own rise. A
-	# generous +10px margin covers the pre-contact ascent and post-cling
-	# decay tail without being so loose it'd miss a real regression back
-	# to unbounded (the pre-cap behavior was 128.7px against this ~106px
-	# ceiling).
-	var ceiling: float = baseline_rise + config.wall_cling_entry_speed_cap * config.wall_cling_frames + 10.0
-	return Expect.is_true(rise <= ceiling, "rise while jumping into a wall (%s) should stay within the entry-speed-cap-bounded ceiling (%s), not be unbounded" % [rise, ceiling])
+	return Expect.is_true(rise <= baseline_rise + 2.0, "rise while jumping into a wall (%s) should not exceed an ordinary jump's rise (%s)" % [rise, baseline_rise])
 
 ## Milestone 4 tuning iteration 1, bug 4 (part 1): releasing "into the
 ## wall" used to drop cling attachment on the very next frame (on_wall_*

@@ -90,22 +90,28 @@ Double jump refills on ground contact and on wall contact.
 | Wall jump input lockout | 8 frames of no horizontal input authority |
 | Wall detach grace | 8 frames of holding away/neutral before cling actually releases |
 | Wall coyote time | 6 frames after losing wall contact during which a wall jump still fires |
-| Wall cling entry speed cap | 4.0 px/frame max magnitude of velocity.y carried into a cling |
+| Wall cling entry speed cap | 4.0 px/frame max magnitude of velocity.y carried into a cling while falling or at rest |
 
 Wall jump away from the wall is the strong one. Neutral wall jump (no
 directional input) launches at (±3.0, -6.5) — more height, less distance.
 
-Entering a cling **preserves** whatever vertical velocity the player arrived
-with (up or down), up to `wall_cling_entry_speed_cap` — "zero gravity"
-suspends gravity's accumulation, it does not reset velocity. (Milestone 4
-tuning iteration 1 briefly arrested velocity to 0 on entry, to fix a bug where
-jumping into a wall from the ground flung the player far above normal jump
-height. Iteration 2 reverted that — zeroing made mistiming a running jump
-into a wall corner kill all momentum instead of letting it bump-and-keep-
-rising, which felt wrong — then added the entry speed cap to bound the
-reintroduced overshoot without eliminating the "keep rising" feel. A fresh
-jump's -6.5 clamps down to the cap; ordinary grazes under the cap are
-untouched.)
+**While attached to a wall and still rising (velocity.y < 0), gravity behaves
+exactly as it would off the wall** — normal decay, no freeze. The wall only
+"catches" you once you actually stop ascending: from that point, cling
+applies (zero gravity, entry speed clamped to `wall_cling_entry_speed_cap`)
+for `wall_cling_frames`, then the usual `wall_slide_max_fall_speed` cap.
+
+(Milestone 4 tuning iteration 2 took three passes to get here. First: cling
+preserves entry velocity outright. This reopened a bug where jumping into a
+wall from the ground flung the player far above normal jump height — not
+because velocity was ever *increased*, but because freezing a
+still-decelerating velocity for a fixed zero-gravity window suspends the
+deceleration a normal jump would have had, adding height a decaying
+trajectory wouldn't have covered. Second: capped entry speed instead of
+arresting it — bounded the overshoot but didn't address why it happened.
+Third, this version: don't freeze rising velocity at all. Since it decays
+naturally the same as off-wall, there's nothing left to bound for the rising
+case — the entry cap now only matters for a genuinely fast downward catch.)
 
 During `wall_detach_grace`, horizontal movement is pinned (velocity.x zeroed,
 input has no authority) — a commitment window, not a slow release. Vertical

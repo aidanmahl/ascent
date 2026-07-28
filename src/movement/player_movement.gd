@@ -217,27 +217,40 @@ static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 ## go. wall_contact counts consecutive attached frames, used only to know
 ## when the cling window ends.
 ##
-## Milestone 4 tuning iteration 2: cling PRESERVES whatever vertical speed
-## the player arrived with (up or down) rather than zeroing it - iteration
-## 1 zeroed it, but that made mistiming a running jump into a wall corner
-## kill all momentum instead of letting it bump-and-keep-rising, which felt
-## wrong. Read literally, "zero gravity" during cling only suspends
-## gravity's accumulation; it doesn't reset velocity.
-##
-## That reopened the superjump the zeroing had fixed (a fresh jump's full
-## -6.5 held for the whole zero-gravity cling window flings the player far
-## above normal jump height), so entry speed is clamped to
-## wall_cling_entry_speed_cap instead of the full arrest-to-0 - bounds the
-## overshoot without killing the "keep rising" feel for a more ordinary
-## graze. Only applied once, on the frame attachment begins (entering_cling)
-## - nothing else touches velocity.y while clinging.
-##
-## After the wall_cling_frames window, gravity resumes but clamped to
-## wall_slide_max_fall_speed instead of the normal max_fall_speed, for as
-## long as still attached.
+## Milestone 4 tuning iteration 2 went through two attempts at "cling
+## preserves velocity" before landing here:
+## - First: preserve entry velocity outright (up or down). Reopened the
+##   superjump - freezing a still-decelerating upward velocity for the
+##   whole zero-gravity cling window adds height a naturally-decaying jump
+##   wouldn't have covered. Not an increase in instantaneous speed, an
+##   increase in the area under the velocity curve.
+## - Second: cap entry speed instead of arresting it. Bounded the
+##   overshoot but didn't address the actual mechanism - freezing ANY
+##   still-decaying velocity, capped or not, still suspends the
+##   deceleration a normal jump would have had.
+## - This version: while attached AND still rising (velocity.y < 0),
+##   gravity behaves exactly as it would off the wall - normal decay, no
+##   freeze, no cap, wall_contact held at 0 so the cling window hasn't
+##   started yet. The wall only "catches" you once you actually stop
+##   rising: cling (zero gravity, entry speed clamped to
+##   wall_cling_entry_speed_cap) kicks in from that point, then the usual
+##   wall_slide_max_fall_speed cap once wall_cling_frames elapses. Since a
+##   still-rising player entering this transition has already decayed
+##   toward 0 under normal gravity, the entry cap now only matters for a
+##   genuinely fast downward catch (grabbing a wall mid-fall) - it was
+##   never the rising case that needed bounding, once rising isn't frozen
+##   at all.
 static func _apply_gravity(state: MovementState, config: MovementConfig) -> void:
 	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
 	var attached := (not state.on_floor) and wall_detach <= config.wall_detach_grace
+
+	if attached and state.velocity.y < 0.0:
+		state.timers["wall_contact"] = 0
+		var g_rising := config.gravity
+		if absf(state.velocity.y) < config.apex_hang_threshold:
+			g_rising *= config.apex_hang_gravity_multiplier
+		state.velocity.y = minf(state.velocity.y + g_rising, config.max_fall_speed)
+		return
 
 	var wall_contact: int = state.timers.get("wall_contact", 0)
 	var entering_cling := attached and wall_contact == 0

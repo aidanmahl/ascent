@@ -49,13 +49,11 @@ extends Resource
 ## Frames of zero gravity when first pressing into a touched wall, before
 ## it settles into a slide capped at wall_slide_max_fall_speed.
 @export var wall_cling_frames: int = 13
-## Max magnitude of velocity.y carried into a cling on entry. Cling
-## preserves whatever vertical speed the player arrived with (a fast
-## graze should still bump-and-rise, not stop dead), but a fresh jump's
-## full -6.5 sustained for the whole zero-gravity cling window would fling
-## the player far above normal jump height - this bounds that without
-## eliminating the "keep rising" feel entirely. Entry speeds under the cap
-## are untouched.
+## Max magnitude of velocity.y carried into a cling on entry - only
+## relevant while falling or at rest (attached + rising uses normal
+## gravity with no cling freeze at all, see _apply_gravity). Bounds how
+## hard a fast downward catch gets held; entry speeds under the cap are
+## untouched.
 @export var wall_cling_entry_speed_cap: float = 4.0
 ## Wall jump while holding away from the wall - the strong one (more
 ## distance). Sign is resolved at jump time from which wall is touched.
