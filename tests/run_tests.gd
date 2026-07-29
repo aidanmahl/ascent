@@ -60,6 +60,10 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("wall_detach_grace_locks_horizontal_movement", _test_wall_detach_grace_locks_horizontal_movement)
 	runner.register("wall_jump_during_late_grace_does_not_burn_double_jump", _test_wall_jump_during_late_grace_does_not_burn_double_jump)
 	runner.register("reset_clears_state_and_returns_to_spawn", _test_reset_clears_state_and_returns_to_spawn)
+	runner.register("wall_jump_toward_wall_cannot_chain_for_unlimited_height", _test_wall_jump_toward_wall_cannot_chain_for_unlimited_height)
+	runner.register("wall_jump_neutral_state_ends_after_leaving_wall", _test_wall_jump_neutral_state_ends_after_leaving_wall)
+	runner.register("wall_state_ends_when_walking_off_bottom_of_wall", _test_wall_state_ends_when_walking_off_bottom_of_wall)
+	runner.register("wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity", _test_wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity)
 
 func _default_config() -> MovementConfig:
 	return load("res://src/movement/default_movement_config.tres")
@@ -852,23 +856,50 @@ func _test_wall_detach_grace_keeps_cling_attached() -> String:
 	return Expect.is_true(post_history[-1].velocity.y > config.wall_slide_max_fall_speed + 0.001, "vy well after grace has fully expired (holding away the whole time) should exceed the wall-slide cap - no longer attached")
 
 ## Milestone 4 tuning iteration 5: neutral (no horizontal input at all)
-## must NOT advance the detach countdown - only actively pressing away
-## does. Holds the wall, then goes fully neutral for far longer than
-## wall_detach_grace would normally allow, and confirms the player is
-## still attached (wall-slide-capped, not free-falling) indefinitely -
-## matches the documented "no stamina meter" design intent, which
-## previously only held true while continuously pressing into the wall.
+## must NOT advance the detach countdown while genuinely still beside a
+## wall - only actively pressing away (or actually leaving) does. Holds
+## the wall, then goes fully neutral for far longer than wall_detach_grace
+## would normally allow, and confirms the player is still attached
+## (wall-slide-capped, not free-falling) indefinitely - matches the
+## documented "no stamina meter" design intent.
+##
+## Milestone 4 regression fix (PROMPT.md, this session): this used to
+## inject on_wall_left directly with no real wall geometry at all, which
+## is exactly the setup that let the neutral-freeze regression through
+## undetected - a synthetic "was touching once" flag froze wall_detach
+## forever regardless of whether anything was actually still there.
+## _update_wall_attachment now checks real proximity (TileCollision.
+## is_touching_wall) before letting neutral freeze the countdown, so
+## proving "cling persists indefinitely while genuinely at the wall" needs
+## a real wall the player is actually still resting against, not just a
+## flag pulsed once at the start.
 func _test_wall_cling_persists_indefinitely_on_neutral() -> String:
 	var config := _default_config()
+	var wall_col := 0
+	var solid_tiles: Dictionary = {}
+	for row in range(-10, 40):
+		solid_tiles[Vector2i(wall_col, row)] = true
 	var state := MovementState.new()
+	state.position = Vector2(30, 8)
 
-	var frames: Array[Dictionary] = [{"on_wall_left": true, "move_left": true}]
-	for i in range(config.wall_detach_grace * 3):
-		frames.append({"on_wall_left": false, "move_left": false})
+	var attach_frames := InputPlayback.hold({"move_left": true}, 40)
+	var neutral_frames := InputPlayback.hold({"move_left": false}, config.wall_detach_grace * 3)
+	var frames: Array[Dictionary] = []
+	frames.append_array(attach_frames)
+	frames.append_array(neutral_frames)
 
-	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
 
-	return Expect.is_true(history[-1].velocity.y <= config.wall_slide_max_fall_speed + 0.001, "vy should stay capped at wall_slide_max_fall_speed indefinitely under neutral input, well beyond what wall_detach_grace alone would allow")
+	var touched_wall := false
+	for i in range(attach_frames.size()):
+		if history[i].on_wall_left:
+			touched_wall = true
+			break
+	var setup_failure := Expect.is_true(touched_wall, "test setup problem: player never made real contact with the wall while pressing into it")
+	if setup_failure != "":
+		return setup_failure
+
+	return Expect.is_true(history[-1].velocity.y <= config.wall_slide_max_fall_speed + 0.001, "vy should stay capped at wall_slide_max_fall_speed indefinitely under neutral input while still genuinely resting against a real wall, well beyond what wall_detach_grace alone would allow")
 
 ## Milestone 4 tuning iteration 1, bug 4 (part 2): a wall jump used to
 ## require actually touching the wall the exact frame jump is pressed.
@@ -1005,3 +1036,134 @@ func _test_reset_clears_state_and_returns_to_spawn() -> String:
 	if failure != "":
 		return failure
 	return Expect.equal(state.timers.size(), 0, "all timers should be cleared by reset")
+
+## Regression suite for the user's Group A/B bug report (PROMPT.md,
+## milestone 4 tuning iteration 5 aftermath): the neutral-input detach
+## freeze didn't check real proximity, so wall-slide fall cap and wall-jump
+## eligibility could persist indefinitely after actually leaving a wall by
+## any means, chaining unlimited height, only ending on active opposite
+## input. Fixed in _update_wall_attachment (see its doc comment) via
+## TileCollision.is_touching_wall. Per PROMPT.md's testing requirement,
+## these run long input sequences and assert bounded outcomes rather than
+## re-deriving the internal mechanism.
+
+## Group A repro 1: wall jump fired while STILL holding "into" the wall,
+## that same direction held briefly afterward (matching the repro - it's
+## the immediate aftermath of the jump that floated forever), then neutral
+## for the remainder so the player can't legitimately drift back into the
+## same wall for real (turnaround acceleration would eventually walk it
+## back into contact if "into" were held for the full test, which would
+## make a second wall jump firing later legitimate rather than a bug).
+## Mashes jump throughout the neutral phase (no real contact ever
+## regained) and asserts vy never jumps back upward once safely past every
+## wall-jump grace window - a rise there would mean a chained wall jump
+## fired with no wall to fire it from, i.e. unlimited height.
+func _test_wall_jump_toward_wall_cannot_chain_for_unlimited_height() -> String:
+	var config := _default_config()
+	var wall_col := 0
+	var solid_tiles: Dictionary = {}
+	for row in range(8, 60):
+		solid_tiles[Vector2i(wall_col, row)] = true
+	var state := MovementState.new()
+	state.position = Vector2(30, 100)
+
+	var approach: Array[Dictionary] = InputPlayback.hold({"move_left": true}, 40)
+	var setup_history := InputPlayback.run(state, config, approach, PlayerMovement.process, solid_tiles)
+	var attached := false
+	for s in setup_history:
+		if s.on_wall_left:
+			attached = true
+			break
+	var setup_failure := Expect.is_true(attached, "test setup problem: player never made real contact with the wall")
+	if setup_failure != "":
+		return setup_failure
+
+	var frames: Array[Dictionary] = [{"jump_pressed": true, "move_left": true}]
+	for i in range(20):
+		frames.append({"jump_pressed": false, "move_left": true})
+	for i in range(100):
+		frames.append({"jump_pressed": (i % 5 == 0), "move_left": false})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	var safe_cutoff := config.wall_detach_grace + config.wall_coyote_time + 2
+	for i in range(safe_cutoff, history.size() - 1):
+		var failure := Expect.is_true(history[i + 1].velocity.y >= history[i].velocity.y - 0.001, "vy at frame %d should never jump back upward once well past every wall-jump grace window (was %s, became %s) - a rise here means a chained wall jump fired with no real wall contact" % [i, history[i].velocity.y, history[i + 1].velocity.y])
+		if failure != "":
+			return failure
+	return ""
+
+## Group A repro 2: wall jump fired with no directional input held at all,
+## then nothing held afterward either. No real geometry needed here - the
+## whole point is that after this frame there genuinely is no wall
+## anywhere nearby, which is exactly what empty solid_tiles models.
+func _test_wall_jump_neutral_state_ends_after_leaving_wall() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+
+	var frames: Array[Dictionary] = [{"on_wall_left": true, "jump_pressed": true}]
+	for i in range(60):
+		frames.append({"on_wall_left": false, "jump_pressed": false})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	return Expect.is_true(history[-1].velocity.y > config.wall_slide_max_fall_speed + 0.001, "vy well after a neutral wall jump with no real wall nearby should exceed the wall-slide cap - normal gravity should have resumed, not stayed floating")
+
+## Group A repro 3: walk/slide off the bottom edge of a wall without ever
+## jumping or pressing away - holds "into" the wall the entire test. Real
+## geometry with a wall that ends partway down, so the player naturally
+## falls clear of it while cling caps the descent rate.
+func _test_wall_state_ends_when_walking_off_bottom_of_wall() -> String:
+	var config := _default_config()
+	var wall_col := 0
+	var wall_bottom_row := 15
+	var solid_tiles: Dictionary = {}
+	for row in range(5, wall_bottom_row):
+		solid_tiles[Vector2i(wall_col, row)] = true
+	var state := MovementState.new()
+	state.position = Vector2(19, float((wall_bottom_row - 1) * config.tile_size))
+
+	var frames := InputPlayback.hold({"move_left": true}, 80)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	var setup_failure := Expect.is_true(history[0].on_wall_left, "test setup problem: player should start in real contact with the wall")
+	if setup_failure != "":
+		return setup_failure
+
+	return Expect.is_true(history[-1].velocity.y > config.wall_slide_max_fall_speed + 0.001, "vy well after falling clear of the bottom of the wall (still holding into the whole time) should exceed the wall-slide cap - the floating state should end even without ever jumping or pressing away")
+
+## Group B: transitioning out of a toward-wall wall jump (hold into, then
+## correct to away) should carry momentum through with no freeze-then-snap
+## - every frame-to-frame change in vx should stay within one frame's worth
+## of (turnaround-boosted) acceleration or friction, never a sudden jump.
+## This is also what proves the detach-grace hard-pin-to-zero fix in
+## _apply_run actually closes the gap: a toward/neutral-fired wall jump now
+## genuinely traverses that window (see _update_wall_attachment's fix)
+## instead of being frozen out of it, so a real launch velocity meeting a
+## hard pin would have produced exactly this kind of jump if left
+## unfixed.
+func _test_wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity() -> String:
+	var config := _default_config()
+	var wall_col := 0
+	var solid_tiles: Dictionary = {}
+	for row in range(8, 60):
+		solid_tiles[Vector2i(wall_col, row)] = true
+	var state := MovementState.new()
+	state.position = Vector2(30, 100)
+
+	var approach: Array[Dictionary] = InputPlayback.hold({"move_left": true}, 40)
+	InputPlayback.run(state, config, approach, PlayerMovement.process, solid_tiles)
+
+	var frames: Array[Dictionary] = [{"jump_pressed": true, "move_left": true}]
+	for i in range(20):
+		frames.append({"jump_pressed": false, "move_left": true})
+	for i in range(40):
+		frames.append({"move_left": false, "move_right": true})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	var max_expected_delta: float = maxf(config.air_friction, config.air_acceleration * config.turnaround_multiplier) + 0.02
+
+	for i in range(1, history.size() - 1):
+		var delta := absf(history[i + 1].velocity.x - history[i].velocity.x)
+		var failure := Expect.is_true(delta <= max_expected_delta, "vx should never change by more than one frame's worth of (turnaround-boosted) acceleration/friction at frame %d->%d (delta %s, max expected %s) - a bigger jump means a freeze-then-snap discontinuity" % [i, i + 1, delta, max_expected_delta])
+		if failure != "":
+			return failure
+	return ""

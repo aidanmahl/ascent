@@ -26,7 +26,7 @@ static func process(state: MovementState, config: MovementConfig, solid_tiles: D
 		return
 	var dashing := _apply_dash(state, config)
 	if not dashing:
-		_update_wall_attachment(state, config)
+		_update_wall_attachment(state, config, solid_tiles)
 		_apply_jump(state, config)
 		_apply_run(state, config)
 		_apply_gravity(state, config)
@@ -45,6 +45,7 @@ static func _reset(state: MovementState, spawn_position: Vector2) -> void:
 	state.dash_direction = Vector2.ZERO
 	state.facing = 1.0
 	state.last_wall_side = 0.0
+	state.wall_attached = false
 	state.timers.clear()
 
 ## wall_detach tracks frames since _is_pressing_into_wall was last true (0
@@ -53,27 +54,48 @@ static func _reset(state: MovementState, spawn_position: Vector2) -> void:
 ## _apply_run can also see this frame's value instead of the previous
 ## frame's stale one (needed for the detach-grace horizontal lock).
 ##
-## Milestone 4 tuning iteration 5: only actively pressing AWAY advances
-## the countdown now - neutral (no horizontal input at all) freezes it
-## wherever it is instead. Previously neutral and away were treated the
-## same, so simply letting go (not necessarily trying to leave) silently
-## spent the same finite budget as deliberately backing off, and a wall
-## cling could only persist by continuously holding into the wall - it
-## couldn't be held with no input, contradicting the documented "no
-## stamina meter, wall hold is time-limited by the cling window" intent.
-## This also gives the moment between releasing "into" and committing to
-## "away" (naturally variable human reaction time) unlimited breathing
-## room instead of quietly costing frames from the same finite window a
-## deliberate wall-jump-away then has to fire within - likely the biggest
-## contributor to that feeling inconsistent.
-static func _update_wall_attachment(state: MovementState, config: MovementConfig) -> void:
+## state.wall_attached is the single source of truth for "currently
+## treated as attached to a wall" (cling/wall-slide gravity, wall jump
+## eligibility, the wall-cling placeholder indicator) - computed once here
+## and read directly by _apply_jump/_apply_gravity instead of each
+## recomputing it from wall_detach independently.
+##
+## Milestone 4 tuning iteration 5 (11d270f): only actively pressing AWAY
+## advanced the detach countdown - neutral (no horizontal input at all)
+## froze it wherever it was, so a cling could be held with no input at all
+## and not just by continuously holding into the wall (the "no stamina
+## meter" requirement). This went too far: it froze equally whether the
+## player was still genuinely beside the wall OR had already left it
+## entirely (fired a wall jump, or walked off the bottom edge) - on_wall_
+## left/right can't tell the difference once velocity.x has decayed to 0,
+## since TileCollision only reports contact on a frame with an actual
+## nonzero-velocity collision (see the standing note in HANDOFF.md), so
+## "released into, still standing right at the wall" and "long gone,
+## floating in open air with no directional input held" were
+## indistinguishable from input state alone. Symptom (user bug report,
+## PROMPT.md): wall-slide fall cap and wall-jump eligibility persisted
+## indefinitely after actually leaving a wall by any means, only ending on
+## active opposite-directional input.
+##
+## Fix: TileCollision.is_touching_wall does a real position/geometry probe
+## against solid_tiles - no velocity, no input, so it isn't fooled by the
+## same nonzero-velocity quirk. Neutral now only freezes wall_detach while
+## that probe confirms genuine proximity; the moment it doesn't (regardless
+## of what direction is held, if any), the same countdown that already
+## governed active away-pressing now also governs "no longer near any
+## wall" - both expire within wall_detach_grace frames, a brief window
+## after leaving, not forever.
+static func _update_wall_attachment(state: MovementState, config: MovementConfig, solid_tiles: Dictionary) -> void:
 	var pressing_into := _is_pressing_into_wall(state)
 	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
+	var wall_side := _current_wall_side(state)
+	var still_touching := TileCollision.is_touching_wall(state.position, config.collider_size, solid_tiles, config.tile_size, config.collision_width_margin_px, wall_side)
 	if pressing_into:
 		wall_detach = 0
-	elif _is_pressing_away_from_wall(state):
+	elif _is_pressing_away_from_wall(state) or not still_touching:
 		wall_detach += 1
 	state.timers["wall_detach"] = wall_detach
+	state.wall_attached = (not state.on_floor) and wall_detach <= config.wall_detach_grace
 
 ## Uses last_wall_side rather than on_wall_left/right directly, same
 ## reasoning as _fire_wall_jump: on_wall_* reads true only while actively
@@ -123,7 +145,6 @@ static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 	var coyote: int = state.timers.get("coyote", 0)
 	var jump_buffer: int = state.timers.get("jump_buffer", 0)
 	var wall_coyote: int = state.timers.get("wall_coyote", 0)
-	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
 
 	if state.on_wall_left:
 		state.last_wall_side = -1.0
@@ -131,9 +152,8 @@ static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 		state.last_wall_side = 1.0
 
 	var touching_wall := state.on_wall_left or state.on_wall_right
-	var attached_via_grace := wall_detach <= config.wall_detach_grace
 	var can_ground_jump := state.on_floor or coyote > 0
-	var can_wall_jump := (touching_wall or wall_coyote > 0 or attached_via_grace) and not state.on_floor
+	var can_wall_jump := (touching_wall or wall_coyote > 0 or state.wall_attached) and not state.on_floor
 	var can_double_jump := (not state.on_floor) and (not can_wall_jump) and state.double_jump_available
 	var wants_jump := state.jump_pressed or jump_buffer > 0
 
@@ -207,12 +227,24 @@ static func _current_wall_side(state: MovementState) -> float:
 		return 1.0
 	return state.last_wall_side
 
-## During wall_detach_grace, horizontal movement is pinned (velocity.x
-## zeroed, input has no authority) - a commitment window, not a slow
-## release. wall_detach was already refreshed for this frame by
-## _update_wall_attachment above. wall_detach == 0 means actively pressing
-## into the wall right now, which isn't the grace window (that's just
-## normal cling) - only 1..wall_detach_grace counts.
+## During wall_detach_grace, horizontal input has no authority - a
+## commitment window, not a slow release. wall_detach was already
+## refreshed for this frame by _update_wall_attachment above. wall_detach
+## == 0 means actively pressing into the wall right now, which isn't the
+## grace window (that's just normal cling) - only 1..wall_detach_grace
+## counts.
+##
+## Milestone 4 tuning iteration 5 fixed a hard-freeze-then-snap in the
+## lockout window above (velocity.x hard-pinned, then an instant, possibly
+## turnaround-multiplied reversal the moment it released); the detach-grace
+## window below used to hard-pin to exactly 0.0 the same way, but nothing
+## exercised that combination on a real wall-jump launch velocity until
+## the wall_detach proximity fix (_update_wall_attachment) started letting
+## toward/neutral-fired wall jumps actually traverse this window instead of
+## short-circuiting out of it via a permanently-frozen wall_detach - a
+## wall-jump launch, partially decayed by lockout's own friction, would
+## then get yanked to exactly 0 the instant lockout released into this
+## branch: the same class of hitch, same fix (friction, not a hard pin).
 static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 	# The wall jump's imparted velocity.x carries through un-fought (no
 	# input authority) for wall_jump_lockout_frames - this timer was
@@ -236,7 +268,8 @@ static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
 	var in_detach_grace := (not state.on_floor) and wall_detach > 0 and wall_detach <= config.wall_detach_grace
 	if in_detach_grace:
-		state.velocity.x = 0.0
+		var detach_friction := config.ground_friction if state.on_floor else config.air_friction
+		state.velocity.x = move_toward(state.velocity.x, 0.0, detach_friction)
 		return
 
 	var input_dir := 0.0
@@ -300,8 +333,7 @@ static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 ## at or very near rest still gets a short hold for whatever budget is
 ## left, same as it always has for a genuine "catch my fall" grab.
 static func _apply_gravity(state: MovementState, config: MovementConfig) -> void:
-	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
-	var attached := (not state.on_floor) and wall_detach <= config.wall_detach_grace
+	var attached := state.wall_attached
 
 	var wall_contact: int = state.timers.get("wall_contact", 0)
 	var first_attached_frame := attached and wall_contact == 0

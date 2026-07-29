@@ -68,6 +68,42 @@ static func resolve(position: Vector2, velocity: Vector2, collider_size: Vector2
 		"on_wall_right": on_wall_right,
 	}
 
+## Pure proximity probe - no velocity, no movement, no collision response.
+## True if a solid tile is immediately adjacent on `side` (-1 left, 1
+## right) to a collider currently resting at `position`. This exists
+## because on_wall_left/right (returned by resolve() above) only reads
+## true on a frame where an actual nonzero-velocity collision occurs - the
+## instant velocity.x hits 0 (e.g. friction settling a released "into"
+## press to rest), resolve() never runs _resolve_x's collision check at
+## all and the flag goes false regardless of whether the collider is still
+## physically touching the wall. Callers that need to know "is this thing
+## still actually beside a wall" independent of this frame's velocity (see
+## player_movement.gd's _update_wall_attachment) need this instead.
+##
+## Assumes `position` is already resting exactly at a tile boundary on
+## that side (true whenever it got there via resolve()'s own collision
+## response) - the EPS probes just outside the edge to identify which tile
+## column the edge is resting against, mirroring _resolve_x's own column
+## math exactly (see the two branches there) so this agrees with whatever
+## resolve() would have reported had this frame been a real collision.
+static func is_touching_wall(position: Vector2, collider_size: Vector2, solid_tiles: Dictionary, tile_size: int, collision_width_margin_px: float, side: float) -> bool:
+	if side == 0.0:
+		return false
+
+	var half := Vector2(maxf(collider_size.x - collision_width_margin_px * 2.0, 1.0), collider_size.y) * 0.5
+	var row_min := _to_tile(position.y - half.y + EPS, tile_size)
+	var row_max := _to_tile(position.y + half.y - EPS, tile_size)
+	var col: int
+	if side < 0.0:
+		col = _to_tile(position.x - half.x - EPS, tile_size)
+	else:
+		col = _to_tile(position.x + half.x + EPS, tile_size)
+
+	for row in range(row_min, row_max + 1):
+		if solid_tiles.has(Vector2i(col, row)):
+			return true
+	return false
+
 static func _to_tile(coord: float, tile_size: int) -> int:
 	return int(floor(coord / float(tile_size)))
 

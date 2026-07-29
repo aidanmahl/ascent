@@ -8,16 +8,18 @@ and reality ever disagree.
 ## Where things are right now
 
 Still at the **milestone 4 tuning gate** (SPECS.md section 11 - hard stop,
-no milestone 5 work without explicit approval). This whole session was
-tuning iterations on top of that gate, plus one piece of infra
-(web export) done first. Nothing has advanced past milestone 4.
+no milestone 5 work without explicit approval). Previous session was
+tuning iterations 1-5 plus web export infra; this session (iteration 6)
+fixed the Group A/B regression those iterations left behind (see "Group
+A/B regression fix" below - the old "Known regression already written up"
+section from last session's handoff is resolved and removed).
 
-**Working tree is clean except `PROMPT.md`**, which currently holds an
-uncommitted draft of the user's *next* bug report (see "Known regression
-already written up" below - read that section before doing anything else
-next session).
+This was a from-the-code fix, not yet confirmed against a human with a
+keyboard - **the gate should not be considered for closing until it gets
+a real playtest.**
 
-Branch `main`, tracking `origin/main`, everything below is pushed.
+Check `git log`/`STATUS.md` for what's actually committed/pushed as of
+whenever you're reading this.
 
 ## Chronological log this session
 
@@ -118,66 +120,117 @@ Branch `main`, tracking `origin/main`, everything below is pushed.
      since milestone 2). Only actual away-pressing now advances
      `wall_detach`; neutral freezes it wherever it is.
 
-## Known regression already written up (uncommitted, in PROMPT.md right now)
+7. **Tuning iteration 6, this session**: fixed the Group A/B regression
+   from item 6's neutral-freeze fix, per the user's detailed bug report in
+   `PROMPT.md` (proximity-gated the neutral freeze, softened the
+   detach-grace hard pin, added the wall-cling indicator). Full detail in
+   "Group A/B regression fix" below - this item is just the log entry.
 
-**I believe iteration 5's neutral-freezes-wall_detach fix is the direct
-cause.** The user's draft bug report (currently sitting uncommitted in
-`PROMPT.md`) describes: wall-slide descent rate and wall-jump availability
-persisting indefinitely after leaving a wall entirely (not just while still
-adjacent and neutral), only ending on actively-opposite input, allowing
-infinite wall-jump chaining/height. Reproductions listed: wall jump
-toward-wall, wall jump neutral, walking off the bottom of a wall without
-jumping - all three produce the same floating state. A second group
-(abrupt stop when finally correcting out of it) is also flagged, and might
-resolve on its own once the first group is fixed (user says verify, don't
-assume).
+## Group A/B regression fix (this session, iteration 6)
 
-**My diagnosis before even opening the file to fix it**: `_update_wall_attachment`
-only resets `wall_detach` to 0 on `pressing_into`, and only increments it
-on `_is_pressing_away_from_wall`. If neither is true (truly neutral input),
-it freezes wall_detach *unconditionally* - including after a wall jump has
-already fired and carried the player far away from the wall entirely. The
-intent (this session, my own fix) was "let cling persist while standing
-neutral right at the wall" - it does not distinguish that from "player is
-nowhere near any wall and just isn't holding a direction," because nothing
-in this function checks distance/actual proximity, only input state. A
-player who wall-jumps and doesn't hold a direction afterward (or jumps
-toward the wall, or lets go without ever pressing away) has `wall_detach`
-frozen at whatever it was mid-jump (likely 0 or 1) - `attached` then reads
-true forever, so `wall_slide_max_fall_speed` and `attached_via_grace`
-(wall-jump eligibility) both persist without limit. This matches every
-symptom in the draft report, including "only ends on opposite directional
-input" (the only thing that still increments the timer at all).
+Confirmed the prior session's own diagnosis by re-reading the code fresh
+(not from memory) before touching anything, per its own instruction to do
+so. It held up: `_update_wall_attachment` froze `wall_detach`
+unconditionally on any neutral input, with nothing checking actual
+proximity to a wall - so a player who wall-jumped and didn't hold a
+direction afterward (or jumped toward the wall, or walked off the bottom
+without ever pressing away) got `wall_detach` frozen at whatever it was
+mid-jump, and `attached` read true forever.
 
-Likely fix shape (not implemented, do NOT assume this is right without
-re-deriving): attachment via grace/neutral-freeze should probably also
-require *actual continued proximity* to a wall, not just input state - e.g.
-reset/expire wall_detach once genuinely airborne-and-clear (some position
-or timeout check), or cap how long neutral can freeze it, or only let
-neutral freeze it while still within the *original* wall_detach_grace
-window rather than freezing indefinitely. Whatever the fix, it needs to
-preserve the two things that were actually requested and are working
-correctly per the user's own boundary note ("wall jumping while holding
-away from the wall behaves properly, don't break it") - away-pressing
-still correctly ends things.
+**Root problem, one level deeper than "check proximity"**: `on_wall_left`/
+`on_wall_right` genuinely *can't* distinguish "still standing right at the
+wall" from "long gone" once velocity.x has decayed to 0, because
+TileCollision only reports a collision on a frame with actual nonzero-
+velocity movement into a wall (see "Standing rules" below). Input state
+alone was never going to be enough - needed real geometry.
 
-**Do not start fixing this from memory of my own diagnosis alone** - re-read
-current `_apply_gravity`/`_update_wall_attachment`/`_apply_jump` in
-`src/movement/player_movement.gd` first, the code may have context this
-summary doesn't capture, and the user's PROMPT.md draft has more precise
-repro steps and an explicit test-writing requirement ("long input
-sequences, bounded outcomes - max height reachable, descent rate after
-leaving, absence of any single-frame velocity drop during direction
-changes") that should drive the actual fix and its tests.
+**Fix**: `TileCollision.is_touching_wall(position, collider_size,
+solid_tiles, tile_size, collision_width_margin_px, side)` - a pure
+proximity probe (no velocity, no collision response, just "is there a
+solid tile immediately adjacent on this side of a collider resting here
+right now"). `_update_wall_attachment` now takes `solid_tiles` and uses
+this to gate the neutral-freeze: neutral only freezes `wall_detach` while
+genuinely still adjacent; the moment it isn't (regardless of what
+direction, if any, is held), the same countdown that already governed
+active away-pressing governs this too - expires within
+`wall_detach_grace` frames, same as leaving via active away-pressing
+always has.
 
-## Wall attachment system architecture (current, as of `11d270f`)
+**Second bug this surfaced, not present before the fix**: toward/neutral-
+fired wall jumps used to freeze `wall_detach` at 0 forever (the bug),
+which meant they could never actually reach the `wall_detach_grace`
+window's horizontal-lock branch in `_apply_run` - only the away case ever
+got there, and only because away-pressing blows `wall_detach` straight
+past `wall_detach_grace` at fire time, skipping the window entirely. Once
+the proximity fix let toward/neutral jumps genuinely traverse
+`1..wall_detach_grace`, they hit a branch that had only ever been
+exercised by scenarios where velocity.x was already ~0 going in: a real
+wall-jump launch velocity, partially decayed by the *lockout* window's
+friction, met a hard pin-to-exactly-0.0 in the *grace* window right after
+it - a real freeze-then-snap, i.e. Group B. Same fix as iteration 5 already
+gave the lockout window for the identical symptom: friction-decay instead
+of a hard pin. Confirmed by test
+(`wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity`) -
+this is NOT something that would have been caught by reasoning alone, it
+took writing the test and running it (first version failed against the
+old hard-pin code, in a way that made the mechanism obvious once seen).
 
-This got fairly intricate over 5 iterations. State (`MovementState.timers`
-dict keys, all in `player_movement.gd`):
+**One existing test had to be rewritten, not just left passing**:
+`wall_cling_persists_indefinitely_on_neutral` used to inject
+`on_wall_left` once with no real geometry at all and expect the freeze to
+hold forever - which is exactly the setup that let the original
+regression through undetected (a synthetic "was touching once" flag,
+disconnected from any real wall, froze forever). Rewrote it against a
+real wall column the player is actually still resting against throughout.
+This is the same category of thing HANDOFF flagged after two other tests
+needed rewriting mid-session last time (neutral vs. away injection) - the
+standing lesson is now: anything asserting proximity-dependent behavior
+needs real `solid_tiles`, pure flag injection isn't enough once proximity
+is part of the logic.
+
+Four new regression tests
+(`wall_jump_toward_wall_cannot_chain_for_unlimited_height`,
+`wall_jump_neutral_state_ends_after_leaving_wall`,
+`wall_state_ends_when_walking_off_bottom_of_wall`,
+`wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity`)
+cover the three Group A repros plus the Group B continuity check, as
+bounded-outcome assertions per the user's explicit testing requirement in
+`PROMPT.md` rather than internal-mechanism checks. The chain-height test's
+first draft was itself wrong - it held "into" for the full 120-frame test,
+which (correctly, legitimately) let the player drift back into the same
+real wall via turnaround acceleration and fire a second, *legitimate* wall
+jump; fixed by releasing to neutral after a short window, matching what
+the repro actually describes rather than an unbounded hold no real player
+would do.
+
+Also added: the wall-cling placeholder indicator (`PROMPT.md`'s third,
+unrelated ask) - a violet vertical strip on the player's left edge,
+visible whenever `state.wall_attached`. That field is new on
+`MovementState` and is now the single source of truth for "currently
+attached to a wall" - `_apply_jump`/`_apply_gravity` read it instead of
+each recomputing an equivalent expression from `wall_detach`
+independently, which is exactly the kind of duplication that let this
+regression's fix apply cleanly in one place instead of needing to stay in
+sync across two. Verified visually via `tools/screenshot.cmd` (temporarily
+moved `main.gd`'s `SPAWN_POINT` next to a wall mid-air to catch a real
+attached frame, then reverted - the default spawn geometry lands on a
+floor before it would ever reach a wall, so the default gym alone can't
+exercise airborne wall-cling in a quick screenshot).
+
+No tuning values were changed. SPECS.md section 4 updated to describe the
+new mechanism (proximity-gated neutral freeze, friction-decay detach-grace
+window, the new indicator).
+
+## Wall attachment system architecture (current, as of this session)
+
+This got fairly intricate over 6 iterations. State (`MovementState.timers`
+dict keys unless noted, all in `player_movement.gd`):
 - `wall_detach` (int): frames since `_is_pressing_into_wall` was last
   true. 0 = pressing in right now. Defaults to `wall_detach_grace + 1`
   (already-expired) when absent, NOT 0 - a player who's never touched a
-  wall must not read as attached.
+  wall must not read as attached. Advances (not just freezes) whenever
+  neither pressing into NOR genuinely still adjacent (per
+  `TileCollision.is_touching_wall`) - see this session's fix, above.
 - `wall_contact` (int): consecutive ATTACHED frames (see `attached` below),
   counted continuously from first attachment including the rising phase.
   Used only to know when the cling (zero-gravity) sub-window ends.
@@ -185,22 +238,26 @@ dict keys, all in `player_movement.gd`):
   refreshed to `wall_coyote_time` whenever `touching_wall` (raw
   `on_wall_left/right`) is true. Mostly redundant now that
   `wall_detach_grace` (14) outlasts it (`can_wall_jump` also checks
-  `attached_via_grace` directly), kept for when/if grace is tuned back
+  `state.wall_attached` directly), kept for when/if grace is tuned back
   down below it.
 - `last_wall_side` (state field, not timers): -1/1/0, remembers which
   wall was last actually touched, since `on_wall_left/right` go false the
   instant you're not actively colliding into the wall (TileCollision only
   checks collision on nonzero-velocity axis moves) - needed by
   `_fire_wall_jump` and `_is_pressing_away_from_wall` once those raw flags
-  are gone.
+  are gone, and by `TileCollision.is_touching_wall`'s `side` argument.
+- `wall_attached` (state field, not timers, new this session): `not
+  on_floor and wall_detach <= wall_detach_grace` - computed ONCE, in
+  `_update_wall_attachment`, and read directly by `_apply_jump`/
+  `_apply_gravity`/the shell (wall-cling indicator) instead of each
+  recomputing an equivalent expression independently. This is the single
+  source of truth for "currently treated as attached."
 
-Key derived values, computed fresh each frame:
-- `attached := not on_floor and wall_detach <= wall_detach_grace` -
-  computed identically in both `_apply_jump` (as `attached_via_grace`) and
-  `_apply_gravity`.
-- `_update_wall_attachment` runs first (inside `if not dashing`, before
-  `_apply_jump`/`_apply_run`/`_apply_gravity`) so all three see this
-  frame's fresh `wall_detach`, not last frame's stale one.
+`_update_wall_attachment` runs first (inside `if not dashing`, before
+`_apply_jump`/`_apply_run`/`_apply_gravity`) so all three see this frame's
+fresh `wall_detach`/`wall_attached`, not last frame's stale ones. It now
+takes `solid_tiles` (threaded through from `process()`, same dict
+`_resolve_collision` uses) to run the proximity probe.
 
 `_apply_gravity` behavior by branch:
 - `attached and velocity.y < 0` (still rising): full normal gravity, IDENTICAL
@@ -213,18 +270,19 @@ Key derived values, computed fresh each frame:
 - Not attached: normal gravity/max_fall_speed, same as always.
 
 `_apply_jump`: `can_wall_jump := (touching_wall or wall_coyote>0 or
-attached_via_grace) and not on_floor`. Priority ground > wall > double,
+state.wall_attached) and not on_floor`. Priority ground > wall > double,
 unchanged since milestone 3.
 
 `_apply_run`: wall_jump_lockout (8 frames) grants zero input authority but
 friction still decays velocity.x (iteration 5) except on the exact fire
 frame (`wall_jump_lockout == wall_jump_lockout_frames` identifies that).
 Then, separately, `in_detach_grace` (`wall_detach` in `1..wall_detach_grace`)
-pins velocity.x to exactly 0, no friction even - this is the "commitment
-window" lock from an earlier request. `wall_detach == 0` (actively
-pressing in) skips this, normal run logic applies (and gets continuously
-re-collided/zeroed by TileCollision each frame, per the perpetual-bump
-mechanic).
+grants zero input authority with velocity.x decaying via friction toward 0
+(was a hard pin to exactly 0 before this session - see the Group B fix
+above) - this is the "commitment window" lock from an earlier request.
+`wall_detach == 0` (actively pressing in) skips this, normal run logic
+applies (and gets continuously re-collided/zeroed by TileCollision each
+frame, per the perpetual-bump mechanic).
 
 ## Current MovementConfig values (src/movement/default_movement_config.tres)
 
@@ -267,14 +325,21 @@ deprecated/unused.
 
 ## Test suite
 
-37 tests, all green as of `11d270f`. Two tests I had to rewrite mid-session
-because they were accidentally exercising neutral input where they meant to
-test the away-holding countdown (`_run_wall_coyote_scenario`,
-`_test_wall_detach_grace_keeps_cling_attached`) - worth remembering that
-distinction now exists when writing new wall tests: injecting
+41 tests, all green as of this session (was 37 last session, +4 new, 1
+rewritten - see "Group A/B regression fix" above). Two tests from last
+session had to be rewritten because they were accidentally exercising
+neutral input where they meant to test the away-holding countdown
+(`_run_wall_coyote_scenario`, `_test_wall_detach_grace_keeps_cling_attached`)
+- worth remembering that distinction when writing new wall tests: injecting
 `{"on_wall_left": false, "move_left": false}` alone is NEUTRAL, not
 "released/away" - need `"move_right": true` (or equivalent) to actually
-test the away-holding path.
+test the away-holding path. This session added a second standing lesson on
+top of that one: injecting `on_wall_left` directly with empty `solid_tiles`
+is fine for testing away-pressing (input-only, doesn't need proximity) but
+NOT for testing anything that depends on the neutral-freeze actually
+holding - that needs real `solid_tiles` the player is actually resting
+against, since `_update_wall_attachment` now checks real proximity via
+`TileCollision.is_touching_wall`.
 
 ## Still-flagged items carried over from the old NOTES.md, not touched this session
 
@@ -331,6 +396,9 @@ test the away-holding path.
 - `tools\screenshot.cmd` - headed visual check, writes
   `tools/capture/capture_config.json` (gitignored, scratch) + reads
   `tools/screenshots/*.png` (also gitignored).
-- Read `PROMPT.md` FIRST - it currently holds the user's draft next bug
-  report (see "Known regression" section above), not a stale milestone
-  instruction this time.
+- `PROMPT.md` should be back to a stale milestone-3-era instruction (or
+  whatever the user last wrote there) once this session's fix is
+  committed - re-check it's actually current before trusting it, same
+  standing caveat as always.
+- **This session's fix has not been played by a human yet.** That's the
+  next real gate before milestone 5, not just "did validate.cmd pass."

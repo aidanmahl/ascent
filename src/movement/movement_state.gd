@@ -47,6 +47,14 @@ var facing: float = 1.0
 ## direction is "away".
 var last_wall_side: float = 0.0
 
+## Single source of truth for "currently treated as attached to a wall"
+## (cling/wall-slide gravity, wall jump eligibility) - computed once per
+## frame by PlayerMovement._update_wall_attachment and read by the rest of
+## the movement core plus the shell (for the wall-cling placeholder
+## indicator), rather than each recomputing it independently from
+## wall_detach.
+var wall_attached: bool = false
+
 var timers: Dictionary = {}
 
 func clone() -> MovementState:
@@ -70,5 +78,6 @@ func clone() -> MovementState:
 	copy.dash_direction = dash_direction
 	copy.facing = facing
 	copy.last_wall_side = last_wall_side
+	copy.wall_attached = wall_attached
 	copy.timers = timers.duplicate()
 	return copy

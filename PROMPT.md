@@ -1,94 +1,79 @@
-Milestone 4 tuning iteration 2. Still a tuning pass. Do not advance to
+Milestone 4 tuning iteration 3. Still a tuning pass. Do not advance to
 milestone 5.
 
-## 1. Revert the wall cling velocity change
+Everything below is a regression introduced by the last round of changes.
+The existing regression suite did not catch any of it.
 
-I was wrong last round. Zeroing vertical velocity on wall cling feels bad.
-Mistiming a running jump and clipping a wall corner now kills all momentum,
-when it should let me bump the wall and keep rising to clear the ledge.
+## Group A — wall state persists after leaving the wall
 
-Revert it: entering wall cling preserves existing vertical velocity,
-including upward velocity.
+Symptom: the player keeps the slow descent rate used while clinging to a
+wall, and keeps wall-jump availability, after they are no longer on a wall.
+Normal gravity never resumes. The state only ends on opposite directional
+input.
 
-IMPORTANT: this must NOT reintroduce the superjump. Those were separate
-causes — the superjump came from the stale jump buffer firing a wall jump,
-which you fixed independently. That fix stays. The superjump regression test
-must still pass after this revert. If reverting brings the superjump back,
-the buffer fix was incomplete — tell me rather than re-zeroing velocity.
+Consequence: I can chain wall jumps indefinitely without ever consuming a
+jump, gaining unlimited height. This breaks the game outright — any level
+design is trivially bypassed. Treat it as the highest priority item here.
 
-You have a regression test asserting velocity.y == 0 on cling. Rewrite it to
-assert the opposite: upward velocity is preserved through the cling window.
-This is an authorized test change because the spec changed. Do not delete
-it — invert it.
+Reproductions:
+1. Wall jump while holding toward the wall.
+2. Wall jump with no directional input held.
+3. Walk or slide off the bottom edge of a wall without jumping at all.
 
-Also increase the wall cling window by 10%: 12 -> 13 frames.
+All three produce the same floating state.
 
-While you're in here: report whether corner correction is firing when I clip
-a wall corner mid-jump. If it isn't, say so — don't change it yet.
+Expected: leaving a wall by any means ends the wall state completely.
+Normal gravity resumes immediately. Wall jumps are only available while
+actually on a wall or within the brief window after leaving one, and they
+cannot be chained to gain height without limit.
 
-## 2. Detach grace should lock horizontal movement
+Boundary case that currently works correctly — do not break it: wall
+jumping while holding away from the wall behaves properly and does not
+produce this.
 
-The 8-frame detach grace timing feels right, but the character currently
-moves normally during it. It should be pinned.
+## Group B — abrupt stop when correcting out of the floating state
 
-During wall_detach_grace:
-- Horizontal velocity is 0 and horizontal input has no authority
-- Vertical behavior is completely unchanged — whatever the wall state was
-  doing (cling hang, wall slide, preserved upward momentum) continues exactly
-  as it would have
-- Wall jump remains available
-- When the grace expires, the character detaches and normal movement resumes
+Symptom: while in the Group A floating state, holding the direction away
+from the wall — immediately after the jump or at any point after — halts
+the player dead in midair. It ends the floating state, but with a visible
+hitch.
 
-The grace is a commitment window, not a slow release.
+Reproductions:
+4. After a wall jump held toward the wall.
+5. After a wall jump with no directional input.
 
-## 3. Dash should preserve vertical momentum on exit
+Expected: transitioning from a toward-wall or neutral wall jump into
+opposite-direction movement is seamless. Momentum carries through the
+change with no pause, freeze, or velocity reset at any point.
 
-Upward and diagonal-up dashes stop dead at the end. Vertical exit velocity
-should be retained the same way horizontal is — a dash upward should feel
-like a launch that carries, not a hard stop.
+Note that Group B may resolve on its own once Group A is fixed, since the
+floating state is its precondition. Verify it directly rather than
+assuming.
 
-Not extremely strong. A plausible continuation of the dash speed.
+## New — wall cling indicator
 
-Add a separate exported param rather than reusing the horizontal one:
-- dash_exit_retention_vertical: start at 0.6, matching horizontal
+Add a third placeholder ability indicator showing that I am currently
+clinging to a wall. Match the existing two in style and placement logic —
+somewhere on the player rectangle, visually distinct from the double jump
+and dash indicators.
 
-Report the new maximum reachable height for a dash-jump, since the level
-validity constants depend on it.
-
-## 4. Ability indicators
-
-Add a placeholder visual for remaining abilities:
-- A colored line along the TOP edge of the player rectangle = double jump
-  available
-- A colored line along the BOTTOM edge = dash available
-
-Each disappears when consumed and returns on refill. Different colors.
-
-Placeholder only — this gets replaced by real art later, so keep it fully
-decoupled from movement logic and trivial to remove.
-
-## 5. Reset
-
-Implement R to reset (already listed in SPEC section 3, never built).
-R returns the player to the level spawn point with all velocity, timers, and
-ability charges cleared.
-
-ADDITION I'm making, tell me if you disagree: also add a kill plane below the
-level that triggers the same reset automatically. Falling out of the level
-currently requires refreshing the page.
-
-There is no room system yet — that's milestone 7 — so reset means level spawn
-point, not room start.
+Same constraints as the others: placeholder only, fully decoupled from
+movement logic, trivial to remove when real art replaces it.
 
 ## Requirements
 
-- Every change above gets a regression test in the input-playback harness.
-- New values are exported MovementConfig fields. No magic numbers.
-- Update SPEC.md section 4 to match the config.
-- Do not change any value I did not ask you to change. If a fix requires it,
-  tell me instead.
+- Every bug above gets a permanent regression test. The current suite
+  missed all six, so add cases that run long input sequences and assert
+  bounded outcomes — maximum height reachable from a fixed starting
+  position, descent rate after leaving a wall, absence of any single-frame
+  velocity drop during direction changes.
+- Do not change any tuning value I did not ask you to change. If a fix
+  requires one, tell me instead of doing it.
+- Any new tunable values are exported alongside the existing ones. No
+  magic numbers.
+- Keep SPECS.md section 4 in sync with the actual values.
 
 ## Workflow
 
-Fix -> validate.cmd exits 0 -> rebuild web export to docs/ -> commit -> push.
-Report what changed and what to look for when I test.
+Fix -> validate.cmd exits 0 -> rebuild web export to docs/ -> commit ->
+push. Report what changed and what to look for when I test.

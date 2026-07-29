@@ -140,19 +140,40 @@ cling (zero-gravity) portion can run out before grace itself does — from
 that point the player is still attached (wall-slide-capped falling, wall jump
 still available) for the remainder of grace, just no longer frozen.
 
-During `wall_detach_grace`, horizontal movement is pinned (velocity.x zeroed,
-input has no authority) — a commitment window, not a slow release. Vertical
-behavior (cling/slide/preserved momentum) is unaffected, and a wall jump
-remains available throughout.
+During `wall_detach_grace`, horizontal input has no authority — a commitment
+window, not a slow release. Velocity.x decays toward 0 via friction during
+this window rather than being hard-zeroed (see the lockout paragraph below —
+same fix, same reason). Vertical behavior (cling/slide/preserved momentum) is
+unaffected, and a wall jump remains available throughout.
 
-**Only actively pressing away advances the detach countdown — neutral (no
-horizontal input at all) does not** (milestone 4 tuning iteration 5). Cling
-persists indefinitely under neutral input, matching the "no stamina meter"
-rule below, which previously only held true while continuously pressing
-into the wall. This also removes a likely source of "wall jump away feels
-inconsistent" reports: the natural human transition time between releasing
-into and committing to away no longer quietly spends the same finite budget
-a deliberate wall-jump-away then has to fire within.
+**Only actively pressing away, or genuinely no longer near a wall, advances
+the detach countdown — neutral input while still actually beside a wall does
+not** (milestone 4 tuning iteration 5, refined in the following tuning
+session after a regression report). Cling persists indefinitely under
+neutral input while genuinely still at the wall, matching the "no stamina
+meter" rule below. This also removes a likely source of "wall jump away
+feels inconsistent" reports: the natural human transition time between
+releasing into and committing to away no longer quietly spends the same
+finite budget a deliberate wall-jump-away then has to fire within.
+
+Iteration 5's first version froze the detach countdown on *any* neutral
+input, with no check on whether a wall was actually still there — `on_wall_
+left`/`on_wall_right` alone can't tell "released into, still standing right
+at the wall" from "long gone, floating in open air with nothing held",
+since both read identically (false) the moment velocity.x settles to 0 —
+`on_wall_left`/`on_wall_right` only report a collision on a frame with
+actual nonzero-velocity movement into a wall, so releasing "into" (letting
+friction settle velocity.x to rest) reads as leaving instantly whether or
+not the player is still standing right there. That let wall-
+slide fall cap and wall-jump eligibility persist indefinitely after actually
+leaving a wall by any means — a jump, or walking off the bottom edge — only
+ending on active opposite-directional input, and made wall jumps chainable
+for unlimited height. Fixed with a real position/geometry proximity check
+(no velocity or input involved) instead of relying on input state alone:
+neutral only freezes the countdown while genuinely still adjacent to a wall;
+the moment it isn't, the same countdown that already governed active
+away-pressing governs this too — a brief `wall_detach_grace`-frame window
+after leaving, not forever.
 
 **Wall jump input lockout still grants zero input authority for its full 8
 frames, but friction now applies during it** (previously velocity.x was
@@ -160,10 +181,17 @@ completely frozen, not even decaying). If the player held the original
 into-the-wall direction the whole time, the instant lockout ended used to
 produce a sudden turnaround-multiplied reversal back toward the wall — an
 abrupt stop-then-snap-back. Friction decaying the imparted velocity during
-the hold softens that transition without granting any input authority.
+the hold softens that transition without granting any input authority. The
+detach-grace window right after it got the identical treatment for the
+identical reason, once a toward/neutral-fired wall jump could actually reach
+it (previously it couldn't, on account of the bug two paragraphs up).
 
 **No stamina meter.** Wall hold is time-limited by the cling window, not by a
 draining resource. This is Ori, not Celeste.
+
+**Wall cling has a placeholder indicator**, same as double jump and dash — a
+third strip on the player rectangle, visible whenever the movement core
+reports the player as currently wall-attached.
 
 ### Dash
 | Param | Value |

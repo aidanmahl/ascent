@@ -105,21 +105,43 @@ summary.
   cling can persist indefinitely under neutral input, not just active
   into-pressing.
 
-`tools/validate.cmd`: 37/37 green as of `11d270f`.
+- **Iteration 6 — Group A/B regression fix (`PROMPT.md`)**: iteration 5's
+  neutral-input freeze had no way to tell "still standing right at the
+  wall" from "long gone, floating in open air", since `on_wall_left`/
+  `on_wall_right` read identically (false) in both cases once velocity.x
+  settles to 0. Symptom: wall-slide fall cap and wall-jump eligibility
+  persisted indefinitely after actually leaving a wall by any means (a
+  wall jump, or walking off the bottom edge), only ending on active
+  opposite-directional input — unlimited wall-jump chaining, height
+  unbounded. Fixed with a real position/geometry proximity check
+  (`TileCollision.is_touching_wall`, no velocity or input involved) — see
+  `player_movement.gd`'s `_update_wall_attachment` doc comment for the
+  full diagnosis. This also exposed a second, related bug: the
+  wall_detach-grace window's hard pin-to-zero (previously unreachable by
+  toward/neutral-fired wall jumps, since they used to freeze wall_detach
+  at 0 forever) produced a real freeze-then-snap once it became reachable
+  — softened to friction-decay, the same treatment iteration 5 already
+  gave the wall-jump-lockout window for the identical reason. Also added
+  the wall-cling placeholder indicator (`PROMPT.md`'s third ask) — a
+  violet strip on the player's left edge, visible whenever
+  `state.wall_attached` (now the single source of truth for attachment,
+  read by `_apply_jump`/`_apply_gravity`/the shell alike instead of each
+  recomputing it). Four new regression tests cover the three Group A
+  repros plus a Group B velocity-continuity check, per `PROMPT.md`'s
+  testing requirement (long input sequences, bounded outcomes). One
+  existing test (`wall_cling_persists_indefinitely_on_neutral`) had to be
+  rewritten against real wall geometry instead of pure flag injection —
+  its old technique couldn't distinguish the fixed case from the bug it
+  was blind to. No tuning values changed. SPECS.md section 4 updated to
+  match.
 
-**Known issue going into the next session, not yet fixed**: iteration 5's
-neutral-input fix appears to have an unintended consequence — wall-slide
-descent rate and wall-jump eligibility can persist indefinitely after
-actually leaving a wall (not just while still standing neutral beside it),
-since nothing in the attachment tracking checks real proximity, only input
-state. The user has a detailed bug report already drafted (currently
-sitting uncommitted in `PROMPT.md`) with repro steps and test
-requirements. See `HANDOFF.md`'s "Known regression" section for the full
-diagnosis before starting that fix.
+`tools/validate.cmd`: 41/41 green.
 
 ## Next
 - **Milestone 4 gate is still open.** Do not proceed to milestone 5
-  without approval. Next session starts with the regression above.
+  without approval. Iteration 6 above should get a real playtest before
+  the gate is considered for closing — this was a from-the-code fix, not
+  yet confirmed against a human with a keyboard.
 
 ## Surprised by / flagging
 - **Dash locks out jump and run, not just gravity.** SPEC.md section 4

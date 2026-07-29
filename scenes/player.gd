@@ -20,6 +20,7 @@ var kill_plane_y: float = INF
 
 @onready var _double_jump_indicator: ColorRect = $DoubleJumpIndicator
 @onready var _dash_indicator: ColorRect = $DashIndicator
+@onready var _wall_cling_indicator: ColorRect = $WallClingIndicator
 
 func _physics_process(_delta: float) -> void:
 	state.move_left = Input.is_action_pressed("move_left")
@@ -43,3 +44,4 @@ func _physics_process(_delta: float) -> void:
 	# to remove once real art lands.
 	_double_jump_indicator.visible = state.double_jump_available
 	_dash_indicator.visible = state.dash_available
+	_wall_cling_indicator.visible = state.wall_attached
