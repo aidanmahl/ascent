@@ -7,8 +7,32 @@ and reality ever disagree.
 
 ## Where things are right now
 
+**Read this first if you're picking up mid-overhaul: `PLAN.md` (repo
+root) is the design record for the current work** - four judgment-call
+decisions (turnaround removal, additive double jump, wall-jump tier
+starting numbers, dash's grounded-window formula) that the user explicitly
+confirmed before implementation started. Don't re-derive those from
+scratch; read `PLAN.md` first, it's still on disk and current.
+
 Still at the **milestone 4 tuning gate** (SPECS.md section 11 - hard stop,
-no milestone 5 work without explicit approval). Iteration 6 (Group A/B
+no milestone 5 work without explicit approval). The movement feel overhaul
+(see its own section below, after the chronological log) is a full rewrite
+of rules 1-5 - genuinely new mechanics (instant ground turnaround, a
+decaying-impulse dash, an additive double jump redirect, three wall jump
+tiers), not retuned constants. It followed an explicit plan-then-approve
+process this time (`PLAN.md` written and confirmed before any code
+changed) rather than the usual "implement and report" iteration loop
+below. **None of it has been played yet.**
+
+Everything below this point (iterations 1-9) is PRE-overhaul history -
+still accurate for what happened when it happened, but several of the
+mechanisms it describes (`turnaround_multiplier`, dash's fixed-duration
+pre-emption, wall jump's two-tier neutral/toward) no longer exist. Treat
+the overhaul section as the current state of the wall-jump/dash/double-
+jump/run code; treat everything before it as archived reasoning for how
+milestone 4 got here.
+
+**Pre-overhaul history starts here.** Iteration 6 (Group A/B
 regression fix) got played and confirmed fixed - user came back same
 session with iteration 7: a normal feel-tuning pass (gravity, wall-slide
 speed, detach grace) plus one real mechanism change (momentum-based cling
@@ -461,6 +485,126 @@ removed behavior needs the same treatment once the removal is deliberate.
 44/44 green, no test count change (2 rewritten, not net new, alongside the
 above fixes to unrelated pre-existing tests).
 
+## Movement feel overhaul (rules 1-5 full rewrite, later same session)
+
+Different process than every iteration above: user said "huge task, read
+PROMPT.md, report your plan in a new document" - wrote `PLAN.md`
+(repo root, still on disk, worth reading fresh rather than trusting this
+summary), stopped, waited for approval. Four judgment calls flagged in the
+plan (see `PLAN.md`'s "Decisions I made that need your confirmation"
+section for the full reasoning on each):
+- **A**: no turnaround multiplier anywhere - ground gets an instant
+  snap-to-zero-then-accelerate, air gets one uniform accel rate regardless
+  of direction. Confirmed.
+- **B**: double jump's horizontal redirect is ADDITIVE (`velocity.x +=
+  direction * impulse`), not a replacement - this is what makes "never
+  reverses a dash" true by construction instead of by luck of tuning.
+  Confirmed.
+- **C**: toward-wall tier's starting number left as "propose one during
+  implementation, report it" - not blocking. Landed on `(1.5, -6.0)`.
+- **D**: dash's rule-4c grounded-window formula reuses `air_acceleration`
+  rather than a new tunable. Confirmed.
+
+All four confirmed as-proposed ("go" with no changes), implemented in one
+pass rather than the usual validate-after-each-subtask cadence - GDScript
+compiles `run_tests.gd` as one file, so removing a config field (`
+turnaround_multiplier`, both `dash_exit_retention*` fields) makes the
+ENTIRE test file fail to parse until every reference is fixed, not just
+the specific test that used it. Practical effect: implemented rules 1, 2,
+5, 3, 4 in that order (matching `PLAN.md`'s dependency ordering) with
+`validate.cmd` genuinely broken (compile error, not test failures) the
+whole way through, then fixed every touched test in one batch at the end
+and got a clean run. Worth remembering for next time this shape of task
+comes up: "validate after each subtask" is the right DEFAULT, but a
+config-field removal is exactly the case where it can't hold literally,
+and that's fine - it doesn't mean skipping validation, it means the first
+achievable green checkpoint is later than usual.
+
+**What actually changed** (SPECS.md section 4 has the full user-facing
+description now - this is implementation notes, not a restatement):
+- `player_movement.gd`'s `_apply_run` split into `_apply_ground_movement`
+  and `_apply_air_movement` - genuinely different mechanisms now (instant
+  snap vs. uniform gradual accel), not one formula with a multiplier
+  switch.
+- `_fire_wall_jump` is a real three-way branch now (away/neutral/toward),
+  where it used to be a two-way `pressing_away ? strong : neutral` with
+  "everything else" silently meaning both neutral AND toward.
+- New `_fire_double_jump` (previously just `state.velocity.y =
+  config.double_jump_velocity` inline) - vertical still a hard assign,
+  horizontal now `+=` in the held direction.
+- `_apply_dash` renamed `_update_dash`, no longer returns "is dash
+  consuming this frame" (process() no longer branches on it at all) -
+  returns "did a dash just launch this frame," consumed only by
+  `_apply_jump`'s rule-4d suppression. `process()`'s `if not dashing: [...]`
+  wrapper is GONE - wall attachment, jump, run, and gravity all run every
+  single frame unconditionally now, dash included. This is the biggest
+  structural change in the file - dash went from "owns the frame it's
+  active" to "one more velocity-modifying step, same tier as everything
+  else."
+- New unconditional clamp at the end of `process()`:
+  `state.velocity.x = clampf(state.velocity.x, -config.dash_speed,
+  config.dash_speed)`. Not asked for explicitly, but required by the
+  "no horizontal speed ever exceeds dash_speed" invariant PROMPT.md did
+  explicitly require, and it's what makes double jump's additive redirect
+  provably safe rather than "safe as long as nobody retunes the impulse
+  too high" - flagged this reasoning in the report rather than adding it
+  silently.
+
+**Three of my own new tests were wrong on the first run, all caught by
+actually executing them** (not by more careful derivation - the derivation
+was the thing that was wrong each time):
+1. `_test_dash_ground_window_cannot_be_fully_cancelled` assumed the
+   nominal-duration gating window stayed open through its own last frame.
+   It doesn't - `dash_timer` decrements every frame including the launch
+   frame (same as the old, since-removed wall-jump lockout timer did), so
+   by the last nominal frame the timer's already hit 0 for THAT frame's
+   own decision. Not a new inconsistency, just one I mis-modeled on paper
+   the first time. Fixed by checking `dash_duration_frames - 2` as the
+   last gated frame instead of `- 1`.
+2. `_test_no_velocity_discontinuity_except_rule_1` read `history[i].
+   on_floor` back out of the returned state snapshots to classify which
+   frames were "grounded" - but on_floor was injected (no real
+   solid_tiles in this test), and `_resolve_collision` overwrites it to
+   false by the time a snapshot is captured, even on frames where the
+   injected value was true for the DECISION that frame actually made.
+   Same "stale vs. fresh collision flags" distinction already documented
+   further down this file, just a fresh instance of forgetting it. Fixed
+   by tracking a parallel `grounded: Array[bool]` from the test's own
+   frame construction instead of reading state back unreliably.
+3. `_test_away_wall_jump_cannot_regrab_wall_quickly`'s second jump press
+   (intended to fire a double jump back toward the wall) actually fired
+   ANOTHER wall jump instead - `wall_attached` stays true for the entire
+   `wall_detach_grace` window (22 frames) regardless of actual distance
+   from the wall (pre-existing behavior, not touched by this overhaul),
+   and `can_wall_jump` outranks `can_double_jump` in `_apply_jump`'s
+   priority chain. A weak toward-tier wall jump (hard-assigned, not
+   additive) fired instead, which behaves completely differently from
+   what the test meant to exercise. Fixed by waiting out `wall_detach_
+   grace + wall_coyote_time` before the second press, and confirming via
+   the double-jump CHARGE (`double_jump_available` going false) that a
+   real double jump actually fired before trusting the rest of the
+   assertion. This ALSO caused a real back-and-forth on `double_jump_
+   horizontal_impulse`: weakened it 3.5 → 2.0 to make the (buggy) test
+   pass, then once the test itself was fixed, reverted to 3.5 and
+   confirmed it still passed - 3.5 (matching rule 3's "very powerful from
+   running speed" calibration guidance) was fine all along; 2.0 was
+   quietly undercutting an explicit request to satisfy a test that was
+   asking the wrong question. Worth remembering: a test failure on a
+   brand-new test is at least as likely to be the test as the code -
+   don't retune a real value to appease one before checking which side is
+   actually wrong.
+
+Verified beyond the headless suite: ran the real scene through `tools/
+screenshot.cmd` (ground run, direction flip, dash, jump) - no script
+errors, ability indicators refill correctly, nothing visually broken.
+Config field diff: removed `turnaround_multiplier`, `dash_exit_horizontal_
+retention`, `dash_exit_retention_vertical`; added `double_jump_horizontal_
+impulse` (3.5), `wall_jump_toward_velocity` ((1.5, -6.0)), `dash_diagonal_
+up_vertical_boost` (1.4); `air_acceleration` raised again (0.15 → 0.3).
+Test count 45 → 54 (9 net new, several more rewritten in place - see
+`STATUS.md` for the full old-vs-new assertion list PROMPT.md's testing
+rules require).
+
 ## Wall attachment system architecture (current, as of this session)
 
 This got fairly intricate over 7 iterations. State (`MovementState.timers`
@@ -526,6 +670,14 @@ frame, per the perpetual-bump mechanic).
 
 ## Current MovementConfig values (src/movement/default_movement_config.tres)
 
+**Superseded by the movement feel overhaul above - this snapshot is
+pre-overhaul history, kept for the diff trail, not current values.** See
+`src/movement/default_movement_config.tres` directly for what's actually
+there now; the overhaul section has the specific field-level diff
+(removed: `turnaround_multiplier`, both `dash_exit_retention*` fields;
+added: `double_jump_horizontal_impulse`, `wall_jump_toward_velocity`,
+`dash_diagonal_up_vertical_boost`; changed: `air_acceleration` 0.15→0.3).
+
 ```
 max_run_speed = 2.125          (was 2.5; -15% then -50% more = -57.5% total)
 ground_acceleration = 0.10625  (was 0.25; untouched this session - explicit request not to)
@@ -567,7 +719,12 @@ using them were removed/superseded.
 
 ## Test suite
 
-44 tests, all green as of this session (was 37 last session, +4 for the
+54 tests, all green as of this session's movement feel overhaul (was 45
+right before it - see the overhaul section above for the full breakdown of
+what's net-new vs. rewritten-in-place). Everything below this point is
+pre-overhaul history.
+
+44 tests, all green earlier this session, pre-overhaul (was 37 last session, +4 for the
 Group A/B fix, +2 for momentum-initiation, +1 for the grounded-contact
 fix, +2 new/-2 rewritten net zero for the wall-jump-input-authority change
 - see "Group A/B regression fix", "Momentum-based cling initiation",
@@ -647,14 +804,16 @@ against, since `_update_wall_attachment` now checks real proximity via
   committed - re-check it's actually current before trusting it, same
   standing caveat as always.
 - **Iteration 6 (Group A/B) got played and confirmed fixed this same
-  session. Iteration 7's momentum-initiation MECHANISM got a bug report
-  and a follow-up fix (iteration 8) in the same session - but iteration
-  7's feel-tuning VALUES (gravity, wall-slide speed, detach grace) have
-  never been confirmed played on their own. Iteration 9 (another feel
-  pass + the wall-jump-lockout removal) is completely unplayed - it's the
-  freshest and largest change of the whole session.** That's the next
-  real gate before milestone 5, not just "did validate.cmd pass." Given
-  how much has changed (jump feels very different now: -40% velocity,
-  -20% more gravity on top of two earlier cuts, full air control after
-  wall jumps), this is a good session to slow down and get direct
-  feedback before stacking more changes on top.
+  session. Iterations 7-9's feel/mechanism changes were never confirmed
+  played before the movement feel overhaul landed on top of them. The
+  overhaul itself (rules 1-5, full rewrite - see its own section above)
+  has NOT been played at all - it's a from-the-plan implementation, not
+  yet touched by a human with a keyboard.** That's the next real gate
+  before milestone 5, not just "did validate.cmd pass" - and more so than
+  any previous point in milestone 4, since this changed actual mechanics
+  (instant ground turnaround, decaying dash, additive double jump, three
+  wall jump tiers) rather than retuned constants on unchanged mechanics.
+  Strongly worth getting this played in isolation before anything else
+  stacks on top - `PLAN.md` (repo root) has the design reasoning if
+  something feels off and you want to know whether it's a bug or a
+  deliberate choice worth revisiting.

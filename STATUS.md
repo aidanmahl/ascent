@@ -228,11 +228,116 @@ summary.
 
 `tools/validate.cmd`: 44/44 green (2 rewritten, not net new — see above).
 
+## Movement feel overhaul (approved plan, full rewrite of rules 1–5)
+
+User: "movement feels sluggish... this changes the underlying feel model,
+not individual values." Explicit process this time: read the whole
+request, write a plan document (`PLAN.md`) before touching anything, wait
+for approval. Plan covered four judgment-call decisions up front (see
+`PLAN.md`, still on disk); all four confirmed as-proposed, then
+implemented in one pass: config shape → rule 1 (ground) → rule 2 (air) →
+rule 5 (wall jump tiers) → rule 3 (double jump) → rule 4 (dash, the
+biggest structural change) → new tests → SPECS.md sync.
+
+- **Rule 1 — ground direction changes are instantaneous.** Opposing input
+  on the ground no longer decelerates through a turnaround: velocity.x
+  drops to 0 and accelerates in the new direction on the SAME frame
+  (`move_toward` starting from 0 instead of current velocity) - already
+  nonzero in the new direction by the time the frame's math finishes, so
+  it never reads as a stop.
+- **Rule 2 — air control rewrite.** `air_acceleration` raised again (0.15
+  → 0.3) and applied UNIFORMLY regardless of direction - no more
+  turnaround-multiplier concept for air (or anywhere). `turnaround_
+  multiplier` removed from `MovementConfig` entirely: once ground uses an
+  instant snap and air uses one uniform rate, it had no remaining call
+  site.
+- **Rule 5 — wall jump gets a third tier.** Previously toward-the-wall and
+  neutral fired identically; `_fire_wall_jump` is now a real three-way
+  branch (away/neutral/toward). New `wall_jump_toward_velocity` field
+  `(1.5, -6.0)`, deliberately weaker than neutral `(3.0, -6.5)`, which
+  keeps its old number unchanged. Away `(4.0, -6.0)` untouched, per
+  explicit instruction.
+- **Rule 3 — double jump redirect.** New `double_jump_horizontal_impulse`
+  (3.5) is ADDED to existing velocity.x in the held direction, never
+  replaces it - vertical launch (`double_jump_velocity`, unchanged) always
+  fires regardless. Additive rather than a hard assignment is what makes
+  "a directional double jump countering a dash never reverses the dash
+  direction" true by construction, not by luck of the tuning.
+- **Rule 4 — dash overhaul, the big structural change.** `process()` no
+  longer treats dash as a pre-emption branch (`if not dashing: [everything
+  else]`) - dash is now just one more step that runs in its normal turn.
+  `_apply_dash` renamed `_update_dash`, returns "did a dash just launch
+  this frame" instead of "is dash consuming this frame." Gravity applies
+  unconditionally every frame now, including a dash's own launch frame.
+  Diagonal-up dashes get a new `dash_diagonal_up_vertical_boost` (1.4×,
+  Y-only) to compensate for gravity now fighting them the whole way;
+  straight-up dashes are explicitly not boosted. `dash_exit_horizontal_
+  retention`/`dash_exit_retention_vertical` removed entirely - there's no
+  scripted "exit" event left to retain velocity at, decay is continuous.
+  4c: while a dash's nominal duration window is still open, even grounded,
+  opposing input reuses rule 2's gradual air formula instead of rule 1's
+  instant snap (can't fully cancel dash momentum in one frame). 4d: a jump
+  pressed the exact frame a dash launches doesn't fire that frame -
+  suppressed only in `wants_jump`, so the existing jump_buffer bookkeeping
+  still runs off the real press and carries it to the next frame for free.
+- **New global invariant: nothing exceeds dash_speed.** One unconditional
+  `clampf` on velocity.x at the end of every `process()` call, rather than
+  trusted to emerge from careful constant selection across every
+  velocity-modifying function. This is also the mechanism that makes
+  double jump's additive redirect safe against ever exceeding dash speed
+  regardless of future retuning.
+
+**Test suite**: 45 → 54 (9 net new - the 4 explicitly required invariants
+plus 5 more per-rule coverage tests). Every existing test PLAN.md flagged
+as "definitely invalidated" was rewritten in place (never deleted, per the
+two testing rules): `dash_exactly_12_frames_at_constant_speed...` →
+`dash_decays_under_gravity_and_normal_movement`; both dash exit-retention
+tests → one boundary-continuity test plus one diagonal-boost test;
+`wall_jump_neutral_is_weak_and_high` → `..._is_middle_tier` (plus a new
+weakest-tier test); the two turnaround-multiplier-dependent wall tests
+simplified to the new uniform air formula. Several more needed numeric
+adjustment without a rename (one-frame accel/friction already applied to
+vx on a wall jump's launch frame, same convention already used for vy).
+
+Three of my own new tests were wrong on the first pass, all caught by
+actually running them rather than trusting the derivation (established
+practice this session): a dash-window test assumed the gating timer
+stayed open one frame longer than it actually does (same read-after-
+decrement-same-frame quirk the old wall-jump lockout timer already had -
+not a new inconsistency, just one I mis-modeled); a global discontinuity
+test read `on_floor` back out of returned state snapshots that were
+already overwritten by real (empty-geometry) collision resolution by the
+time they were captured - fixed by tracking "was this frame's decision
+grounded" from the test's own constructed sequence instead of reading it
+back unreliably; a wall-regrab test's second jump press landed inside
+`wall_detach_grace`, so it fired ANOTHER (weaker) wall jump instead of the
+double jump the test meant to fire, since `can_wall_jump` outranks
+`can_double_jump` in priority regardless of actual distance from the wall
+- fixed by waiting out the grace window first. That last one also caused
+a real back-and-forth on `double_jump_horizontal_impulse` itself: weakened
+it from 3.5 to 2.0 to make the (buggy) test pass, then reverted to 3.5
+once the test was actually fixed and confirmed 3.5 was fine all along -
+worth remembering not to re-tune a value to satisfy a test before
+confirming the test itself is asking the right question.
+
+Verified beyond the headless suite too: ran the real scene through
+`tools/screenshot.cmd` (run, ground turnaround, dash, jump) - no script
+errors, indicators refill correctly, nothing visually broken.
+
+`tools/validate.cmd`: 54/54 green. `SPECS.md` section 4 rewritten in full
+to match (ground/air control split, double jump, three wall jump tiers,
+full dash section); a forward-looking note added to section 10 about how
+future level-validity gap checks should handle non-constant dash distance
+(simulate the real movement code rather than deriving a formula - milestone
+9 doesn't exist yet, this is documentation only).
+
 ## Next
 - **Milestone 4 gate is still open.** Do not proceed to milestone 5
-  without approval. Iteration 9 is a significant mechanism change (full
-  air control after wall jumps) on top of iteration 7's still-unconfirmed
-  feel values — get the whole batch played before the next round.
+  without approval. This is a from-the-plan implementation, not yet
+  played by a human - genuinely new mechanics this time (instant ground
+  turnaround, decaying dash, additive double jump, three wall jump tiers),
+  not just retuned constants. Get this played before anything else stacks
+  on top, more than any previous iteration this milestone.
 
 ## Surprised by / flagging
 - **Dash locks out jump and run, not just gravity.** SPEC.md section 4

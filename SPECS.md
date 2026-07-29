@@ -58,43 +58,85 @@ All values live in a single `MovementConfig` resource with `@export` on every
 field. These are **starting values to be tuned by hand**, not final. Treat
 them as the initial state of a knob, not as a requirement.
 
-### Run
+### Run — ground vs. air control (movement feel overhaul)
 | Param | Value |
 |---|---|
-| Max run speed | 2.125 px/frame (reduced 15% from 2.5 in milestone 4 tuning) |
-| Ground acceleration | 0.10625 px/frame² (reduced 15% then 50% more from 0.25) |
-| Ground friction | 0.60 px/frame² (increased 50% from 0.40 in milestone 4 tuning, to reduce ground stopping inertia - see note below) |
-| Air acceleration | 0.15 px/frame² (roughly doubled from 0.0765 in milestone 4 tuning, for turnaround responsiveness and precise air control - see note below) |
+| Max run speed | 2.125 px/frame |
+| Ground acceleration | 0.10625 px/frame² |
+| Ground friction | 0.60 px/frame² |
+| Air acceleration | 0.30 px/frame² (movement feel overhaul: substantially raised, from 0.15) |
 | Air friction | 0.10 px/frame² |
-| Turnaround multiplier | 2.5× accel when input opposes velocity (increased from 1.8 in milestone 4 tuning) |
 
-**Ground friction, air acceleration, and the turnaround multiplier were all
-increased together to address one complaint: reversing direction (and
-stopping) felt slow and "slippery," like the player carried too much
-inertia.** Explicit constraint on this change: general acceleration (how
-fast the player reaches top speed continuing in one direction) was NOT
-supposed to go up — only the responsiveness of stopping and reversing. Air
-acceleration is the exception, increased directly per request (it also
-governs precise air-control corrections, not just turnaround) and it's a
-shared term with air turnaround (`air_acceleration × turnaround_multiplier`),
-so both goals point the same direction there. Ground acceleration is
-untouched — ground turnaround responsiveness comes entirely from
-`turnaround_multiplier`, which is a shared value (ground and air both read
-it), doubling as the fix for "hard to turn around" in the air too.
+There is no turnaround multiplier anymore — the movement feel overhaul
+(see below) replaced the old single shared "opposing input" formula with
+two genuinely different mechanisms for ground and air, so a per-direction
+multiplier no longer has a role in either one. `turnaround_multiplier` was
+removed from `MovementConfig` entirely.
+
+**Ground direction changes are instantaneous.** Pressing the opposite
+direction while running does not decelerate through a turnaround —
+velocity.x drops to 0 and acceleration in the new direction begins on the
+SAME frame: `move_toward` starts from 0 instead of the current (opposing)
+velocity, so the result is already nonzero in the new direction by the
+time that frame's math finishes. There is no frame where velocity.x is
+actually held at exactly 0 — the zero-crossing and the first step of new
+acceleration happen together, which is what keeps it from reading as a
+stop. Existing speed does not carry into the new direction; the player
+starts from zero and accelerates normally. Same-direction input (or
+starting from rest) is unaffected — ordinary acceleration from wherever
+velocity.x already is. Ground only — not in the air, and not during a
+dash's nominal duration window (see Dash, below).
+
+**Air control is responsive but not absolute.** The player cannot
+instantly reverse direction in midair — momentum from wall jumps and
+dashes has to be fought, not overridden. One raised acceleration constant
+(`air_acceleration`) applies whether input matches or opposes current
+velocity — no separate turnaround boost. The transition through zero is
+quick, since `air_acceleration` is substantially higher than before this
+overhaul, but still takes several frames even at full opposing input —
+the deliberate contrast with the ground's instant snap.
 
 ### Gravity & jump
 | Param | Value |
 |---|---|
-| Gravity | 0.292 px/frame² (reduced 10% from 0.45, then a further ~10%, then a further 20%, across three milestone 4 tuning sessions — 0.45 → 0.405 → 0.365 → 0.292) |
+| Gravity | 0.292 px/frame² |
 | Max fall speed | 5.5 px/frame |
-| Jump velocity | -3.9 px/frame (reduced 40% from -6.5 in milestone 4 tuning) |
-| Double jump velocity | -5.8 px/frame |
+| Jump velocity | -3.9 px/frame |
 | Jump cut (on early release) | velocity × 0.45 |
 | Apex hang | gravity × 0.60 while `abs(vy) < 1.0` |
 | Coyote time | 6 frames |
 | Jump buffer | 8 frames |
 
-Double jump refills on ground contact and on wall contact.
+### Double jump
+| Param | Value |
+|---|---|
+| Vertical launch | -5.8 px/frame (hard-assigned, same pattern as the primary jump — unaffected by horizontal redirect) |
+| Horizontal redirect impulse | 3.5 px/frame, ADDED to existing velocity.x in the held direction |
+
+Refills on ground contact and on wall contact.
+
+**Every double jump carries a horizontal direction and imparts a single
+velocity impulse in it** (movement feel overhaul, rule 3) — `double_jump_
+horizontal_impulse` is ADDED to whatever velocity.x already is in
+whichever direction is currently held (`move_left`/`move_right`), never a
+hard replacement. With no direction held, velocity.x is left completely
+untouched — "preserves current horizontal velocity" falls out of that
+directly, no special case needed. This is deliberately NOT an instant
+direction change the way rule 1's ground turnaround or a dash is: it's one
+fixed impulse layered onto the physics, and after it's applied, ordinary
+air control (the section above) governs the result immediately, same as
+any other airborne velocity. Applied identically in every situation —
+during a dash, right off a wall jump, whatever the current state — with
+no branching on what produced the existing velocity; the interaction with
+those falls out of the physics (an addition), not special-cased logic.
+
+Being additive rather than a replacement is exactly what makes "a
+directional double jump countering a dash never reverses the dash
+direction" true by construction: it can only reduce an opposing dash's
+speed, never flip its sign, as long as the impulse itself stays under
+`dash_speed` — guaranteed by the global "nothing exceeds dash speed"
+clamp described under Dash, below, regardless of how either value gets
+tuned later.
 
 **Corner correction was removed in milestone 4 tuning iteration 3** (the
 nudge-based version only handled the ceiling case, so it never made jumping
@@ -105,20 +147,44 @@ too). Replaced by `collision_width_margin_px` under Collider, below.
 ### Wall
 | Param | Value |
 |---|---|
-| Wall slide max fall speed | 1.0 px/frame (reduced from 1.5, beyond the general gravity reduction, in milestone 4 tuning) |
+| Wall slide max fall speed | 1.0 px/frame |
 | Wall cling | 13 frames of zero gravity on first touch with real momentum into the wall |
-| Wall jump velocity | (±4.0, -6.0) |
-| Wall detach grace | 22 frames of actively holding away (or genuinely not touching) before cling actually releases (8 -> +75% -> 14, then +60% -> 22, across two milestone 4 tuning sessions) |
+| Wall jump velocity (away) | (±4.0, -6.0) — the strong tier |
+| Wall jump velocity (neutral) | (±3.0, -6.5) — the middle tier |
+| Wall jump velocity (toward) | (±1.5, -6.0) — the weak tier (movement feel overhaul, rule 5) |
+| Wall detach grace | 22 frames of actively holding away (or genuinely not touching) before cling actually releases |
 | Wall coyote time | 6 frames after losing wall contact during which a wall jump still fires |
 | Wall cling entry speed cap | 4.0 px/frame max magnitude of velocity.y carried into a cling while falling or at rest |
 
-Wall jump away from the wall is the strong one. Neutral wall jump (no
-directional input) launches at (±3.0, -6.5) — more height, less distance. A
-wall jump remains available for the *entire* `wall_detach_grace` window, not
-just `wall_coyote_time` after losing contact — `wall_detach_grace` is now
-longer than `wall_coyote_time`, so without this a jump pressed late in grace
-used to silently fall through to a double jump instead, burning a charge it
-shouldn't have touched.
+**Three wall jump tiers, by input held at fire time** (movement feel
+overhaul, rule 5 — the one explicit exception to "no special-cased wall
+logic" the request carves out): away-from-the-wall is the strong one,
+neutral (no directional input) is the middle tier, and toward-the-wall
+(holding back into it) is the weakest. Previously toward and neutral fired
+identically; toward now has its own, deliberately weaker `Vector2`.
+
+**Away carries enough outward speed that air control and a directional
+double jump cannot bleed it off fast enough to regrab the same wall in any
+meaningful timeframe — intentional, and does not need to be increased to
+compensate for the movement feel overhaul's stronger air control.** Neutral
+and toward-the-wall impart less outward velocity, so regrabbing the wall
+afterward is possible and intended — it's just not instant; rules 2 and 3
+above (air control, double jump) govern how quickly the player can
+actually turn around and travel back, and that delay is what makes it a
+skill rather than a button press. This behavior is meant to emerge from
+the velocity values and the general air-control rules, not from further
+special-cased wall logic.
+
+A wall jump remains available for the *entire* `wall_detach_grace` window,
+not just `wall_coyote_time` after losing contact — `wall_detach_grace` is
+longer than `wall_coyote_time`, so without this a jump pressed late in
+grace used to silently fall through to a double jump instead, burning a
+charge it shouldn't have touched. Note this also means a jump pressed
+again within that window fires ANOTHER wall jump (of whatever tier
+matches the currently-held input), not a double jump, regardless of how
+far the player has actually traveled from the wall by then — pre-existing
+behavior from an earlier tuning session, not something the movement feel
+overhaul changes.
 
 **While attached to a wall and still rising (velocity.y < 0), gravity behaves
 exactly as it would off the wall** — normal decay, no freeze. The wall only
@@ -211,26 +277,24 @@ the moment it isn't, the same countdown that already governed active
 away-pressing governs this too — a brief `wall_detach_grace`-frame window
 after leaving, not forever.
 
-**Full air control after a wall jump (milestone 4 tuning iteration 9).** A
-wall jump used to lock out horizontal input entirely for `wall_jump_lockout_
-frames` (velocity.x friction-decaying but unresponsive to input), followed
-by the `wall_detach_grace` window doing the same. Both were removed per
-explicit request: the player should be able to precisely judge how far a
-wall jump carries them by varying how long they hold the movement key
-afterward, and a scripted, unresponsive trajectory for up to `wall_detach_
-grace` frames made that impossible — direct tension with this document's
-own "Full air control" pillar (section 3), which the wall jump was always a
-special-cased exception to. `_fire_wall_jump` still assigns the launch
-velocity as an instant impulse; from the very next frame on, it's governed
-by the exact same input/acceleration/friction/turnaround rules as any other
-airborne movement — no special case left at all. Concretely: holding the
-away direction keeps `target_speed` pulling toward `max_run_speed` (a strong
-wall jump's higher launch speed decays toward it, so continuing to hold
-still covers more ground than releasing early), releasing goes through the
-normal neutral-friction branch, and pressing back toward the wall triggers
-the same turnaround-boosted deceleration used everywhere else — including,
-now, potentially walking back into the same real wall for a second,
-perfectly legitimate wall jump, which is not a bug.
+**Full air control after a wall jump.** A wall jump used to lock out
+horizontal input entirely for a fixed window (velocity.x friction-decaying
+but unresponsive to input). Removed per explicit request: the player
+should be able to precisely judge how far a wall jump carries them by
+varying how long they hold the movement key afterward, and a scripted,
+unresponsive trajectory made that impossible — direct tension with this
+document's own "Full air control" pillar (section 3), which the wall jump
+was always a special-cased exception to. `_fire_wall_jump` still assigns
+the launch velocity as an instant impulse; from the very next frame on,
+it's governed by the exact same rules as any other airborne movement (the
+Run section above) — no special case left at all. Concretely: holding the
+away direction keeps `target_speed` pulling toward `max_run_speed` (a
+strong wall jump's higher launch speed decays toward it, so continuing to
+hold still covers more ground than releasing early), releasing goes
+through the normal neutral-friction branch, and pressing back toward the
+wall triggers the same air-control deceleration used everywhere else in
+the air — including, potentially, walking back into the same real wall for
+a second, perfectly legitimate wall jump, which is not a bug.
 
 **No stamina meter.** Wall hold is time-limited by the cling window, not by a
 draining resource. This is Ori, not Celeste.
@@ -243,17 +307,70 @@ reports the player as currently wall-attached. It renders on whichever edge
 ### Dash
 | Param | Value |
 |---|---|
-| Duration | 12 frames |
-| Speed | 7.0 px/frame |
+| Nominal duration | 12 frames — a gating window now, not "how long dash owns the frame" (see below) |
+| Speed | 7.0 px/frame — the fastest horizontal movement in the game, enforced globally (see below) |
 | Direction | 8-way snap from WASD; neutral input dashes in facing direction |
-| Gravity during dash | 0 |
-| Cooldown after dash ends | 6 frames |
-| Exit velocity retention | 60% horizontal, 60% vertical if upward |
+| Diagonal-up vertical boost | 1.4× the Y component only, diagonal (nonzero X) upward dashes only |
+| Cooldown | 6 frames after the nominal duration ends |
 | Refill | on ground contact OR wall contact |
 
-Dash cancels on wall contact. Dashing into the ground at a downward angle
-preserves horizontal speed — this is the seed of an emergent speed tech and
-is intentional. Do not "fix" it.
+**Dash is a decaying impulse, not a fixed-duration, fixed-distance
+scripted movement** (movement feel overhaul, rule 4a). On its launch frame
+it assigns velocity directly (`dash_direction * dash_speed`, an instant
+impulse — same pattern a wall jump or double jump already uses), and
+nothing more; it does not pre-empt anything else the way it used to.
+Gravity applies at all times, including during every dash, from the launch
+frame itself onward. From the very next frame on, the dash's velocity is
+governed by the exact same input/acceleration/friction rules as any other
+airborne (or grounded — see rule 4c below) velocity — "actions impart
+velocity; they do not take control away." Maximum dash distance is
+therefore no longer a constant — it depends on how long the player
+continues holding a direction afterward, whether they're grounded or
+airborne, and gravity's pull on any vertical component. See the dash-
+distance note under "Level validity" in section 10 for how future gap-
+crossing checks should account for this.
+
+**Diagonal-up dashes are boosted; straight-up dashes are not.** Gravity
+now applying throughout a dash (rule 4a) would otherwise shorten a
+diagonal-up dash's reach, so its Y component is multiplied by `dash_
+diagonal_up_vertical_boost` to compensate and retain the dash's intended
+reach. Straight-up dashes (zero X) get no boost — they were already strong
+enough; gravity applying continuously is their correction, not something
+to compensate for.
+
+**Invariant: dash remains the fastest horizontal movement in the game.**
+Enforced with a single unconditional clamp on velocity.x
+(`±dash_speed`) at the end of every physics step, rather than trusted to
+emerge from careful constant selection scattered across every velocity-
+modifying function (double jump's additive redirect, wall jump plus held
+input, any future combination). This is also what guarantees a directional
+double jump can never reverse a dash's direction outright — see Double
+jump, above.
+
+**Cutting a dash short** (rule 4c): holding the opposite direction after
+dashing shortens it, but the instant ground turnaround from rule 1 does
+NOT apply until the dash's nominal duration has finished — this window
+runs on the same clock for dashes that begin midair and land partway
+through. During it, even on the ground, opposing input fights the dash's
+momentum gradually (reusing the air-control formula above) rather than
+snapping to zero — the player can counteract a grounded dash's momentum,
+just not cancel it outright in one frame before the nominal duration ends.
+Dash cooldown does not begin counting until this same window closes.
+
+**Jumping out of a dash** (rule 4d): the player can jump immediately after
+dashing, but explicitly not on the exact same frame the dash starts — that
+press is buffered (via the same jump-buffer mechanism that already
+handles a press arriving slightly before landing) and fires exactly one
+frame later, never dropped. A double jump fired this way follows the
+Double jump rules above: it slows the player meaningfully but cannot
+cancel or reverse the dash, since dash must stay the fastest horizontal
+movement (enforced by the same global clamp). Firing a jump during a
+dash's window does not touch the dash's cooldown or charge in any way —
+nothing in the jump-firing code path reads or writes dash state.
+
+Dash cancels on wall contact (refills the charge immediately). Dashing
+into the ground at a downward angle preserves horizontal speed — this is
+the seed of an emergent speed tech and is intentional. Do not "fix" it.
 
 ### Collider
 | Param | Value |
@@ -413,18 +530,40 @@ milestone is complete.
   after fails.
 - Jump buffer: jump input 6 frames before landing fires on landing.
 - Variable height: released-early jump peaks measurably lower than held.
-- Dash: exactly 12 frames at constant 7.0 px/frame, unaffected by gravity.
+- Dash decays under gravity and normal accel/friction from the launch
+  frame on (not a fixed-duration constant-speed lock); diagonal-up dashes
+  get their vertical component boosted, straight-up dashes do not; holding
+  full opposite input through an entire grounded dash reduces but never
+  fully cancels it before the nominal duration ends, and rule 1's instant
+  ground turnaround resumes the moment it does; a jump pressed on the
+  dash's own launch frame is buffered and fires exactly one frame later,
+  never dropped.
 - Dash refill on ground and wall contact; no refill mid-air otherwise.
-- Double jump available once per airborne period.
-- Wall jump grants full input authority immediately (no lockout, milestone
-  4 tuning iteration 9): held opposing input decelerates from the very next
-  frame, and holding away longer measurably increases total distance
-  traveled versus releasing early.
+- Double jump available once per airborne period; a directional double
+  jump adds its horizontal impulse to existing velocity.x in the held
+  direction (never replacing it), and leaves velocity.x untouched with no
+  direction held.
+- Wall jump grants full input authority immediately (no lockout): held
+  opposing input decelerates from the very next frame, and holding away
+  longer measurably increases total distance traveled versus releasing
+  early. Away, neutral, and toward-the-wall fire distinct tiers based on
+  input held at launch time.
 - Collision width margin: a jump clipping a corner within the margin passes
   through cleanly (no ceiling hit); a bigger overlap still blocks. A ledge
   keeps the player grounded as long as any part of the margin-narrowed hitbox
   still overlaps solid ground, and drops them once fully clear.
 - Player never tunnels through a tile at maximum possible speed.
+
+### Movement feel overhaul invariants
+These hold regardless of how the individual values above get tuned:
+- No horizontal speed anywhere in the game ever exceeds `dash_speed`.
+- A directional double jump countering a dash never reverses the dash's
+  direction.
+- After an away-from-wall wall jump, full opposite input plus a
+  directional double jump does not return the player to the same wall
+  within a short window (a minimum frame count with no wall contact).
+- No single-frame velocity discontinuity during any direction change
+  except the intentional one in rule 1 (the ground's instant turnaround).
 
 ### Combat
 - Gun cooldown is exactly 24 frames; input during cooldown produces nothing.
@@ -434,13 +573,27 @@ milestone is complete.
 
 ### Level validity (run this against every level)
 - Every gap on the critical path is crossable with the current movement
-  config. Compute max jump distance, max dash distance, and max dash-jump
-  distance from the config, then assert no required gap exceeds them.
-- Every room has a reachable exit.
-- No enemy spawns inside collision geometry.
+  config. Every room has a reachable exit. No enemy spawns inside
+  collision geometry.
 
 This last suite is the one that keeps future levels honest. Make it easy to
 run against a new level.
+
+**Dash distance and this suite (movement feel overhaul, milestone 9 does
+not exist yet — this is a forward-looking note, not something implemented
+now).** Dash distance is no longer a fixed constant (rule 4a), so "compute
+max dash distance from the config" as a closed-form formula is no longer
+possible, and re-deriving one by hand risks drifting out of sync with
+retuning in exactly the way this suite is meant to prevent. Instead,
+gap-crossing checks should simulate the real `PlayerMovement.process()`
+stepping function directly — the same pattern the existing input-playback
+tests already use (e.g. `_test_ground_jump_into_wall_does_not_overshoot_
+height` measures a real simulated trajectory rather than computing one by
+hand) — running a defined "best reasonable input" sequence (dash, continue
+holding the same direction, chain a directional double jump if the gap
+requires it) and measuring the resulting displacement empirically. This is
+automatically correct under any future retuning, since it's driven by the
+same physics code the game actually runs.
 
 ---
 

@@ -9,11 +9,21 @@ class_name PlayerMovement
 ## pass {} for open-air scenarios (tests that only care about coyote/buffer/
 ## gravity, not collision).
 ##
-## A dash fully pre-empts jump/run/gravity for every frame it's active.
-## SPEC.md only explicitly says gravity is 0 during a dash, but since dash
-## also overrides velocity directly (not via acceleration) and nothing in
-## SPEC.md describes jump-cancelling a dash, locking out all three for
-## simplicity/predictability is a judgment call - flagged in STATUS.md.
+## Movement feel overhaul (rule 4): nothing pre-empts anything else here
+## anymore - dash used to skip wall attachment/jump/run/gravity outright
+## for every frame it was active; now it's just one more velocity-
+## modifying step that runs in its normal turn, same tier as wall
+## attachment. "Actions impart velocity; they do not take control away."
+## _update_dash still assigns a launch velocity directly on its start
+## frame (an instant impulse, same pattern wall jump and double jump
+## already use) but everything after that - gravity, jump, accel/
+## friction/turnaround - governs it exactly like any other frame. The
+## dash timer it sets doesn't mean "dash owns this frame" anymore; it's a
+## gating window two other systems consult directly: _apply_run (rule 4c
+## - suppresses rule 1's instant ground turnaround while the window is
+## open) and _apply_jump (rule 4d - suppresses firing on the exact launch
+## frame, though the jump_buffer machinery it also updates that same
+## frame carries the press to the next one for free).
 ##
 ## reset_pressed (R, or the shell treating "fell below the kill plane" the
 ## same way) pre-empts everything else unconditionally - teleports to
@@ -24,12 +34,19 @@ static func process(state: MovementState, config: MovementConfig, solid_tiles: D
 	if state.reset_pressed:
 		_reset(state, spawn_position)
 		return
-	var dashing := _apply_dash(state, config)
-	if not dashing:
-		_update_wall_attachment(state, config, solid_tiles)
-		_apply_jump(state, config)
-		_apply_run(state, config)
-		_apply_gravity(state, config)
+	var dash_just_launched := _update_dash(state, config)
+	_update_wall_attachment(state, config, solid_tiles)
+	_apply_jump(state, config, dash_just_launched)
+	_apply_run(state, config)
+	_apply_gravity(state, config)
+	# Movement feel overhaul invariant: dash remains the fastest horizontal
+	# movement in the game, unconditionally - nothing (double jump's
+	# additive redirect, wall jump plus held input, any future combination)
+	# is allowed to exceed it. A single clamp here guarantees this
+	# structurally regardless of how the individual pieces get tuned,
+	# rather than trusting it to emerge from careful constant selection
+	# scattered across every velocity-modifying function.
+	state.velocity.x = clampf(state.velocity.x, -config.dash_speed, config.dash_speed)
 	_resolve_collision(state, config, solid_tiles)
 	_refill_abilities(state)
 
@@ -161,7 +178,7 @@ static func _is_pressing_away_from_wall(state: MovementState) -> bool:
 ## stale-but-real on_wall_* reads, before anything resets them) so
 ## _fire_wall_jump still knows which way is "away" once on_wall_* itself
 ## has gone false during either window.
-static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
+static func _apply_jump(state: MovementState, config: MovementConfig, dash_just_launched: bool) -> void:
 	var coyote: int = state.timers.get("coyote", 0)
 	var jump_buffer: int = state.timers.get("jump_buffer", 0)
 	var wall_coyote: int = state.timers.get("wall_coyote", 0)
@@ -175,7 +192,14 @@ static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 	var can_ground_jump := state.on_floor or coyote > 0
 	var can_wall_jump := (touching_wall or wall_coyote > 0 or state.wall_attached) and not state.on_floor
 	var can_double_jump := (not state.on_floor) and (not can_wall_jump) and state.double_jump_available
-	var wants_jump := state.jump_pressed or jump_buffer > 0
+	# Movement feel overhaul rule 4d: a jump can fire immediately after a
+	# dash, but not on the exact same frame the dash starts. Gated only
+	# here (not by skipping this function, and not by touching
+	# jump_pressed itself) so the jump_buffer bookkeeping below still runs
+	# off the real jump_pressed flag - a press on the dash's launch frame
+	# gets buffered same as any other press that can't fire immediately,
+	# so it's not dropped, just delayed exactly one frame.
+	var wants_jump := (state.jump_pressed or jump_buffer > 0) and not dash_just_launched
 
 	var fires_ground := can_ground_jump and wants_jump
 	var fires_wall := (not fires_ground) and can_wall_jump and wants_jump
@@ -186,7 +210,7 @@ static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 	elif fires_wall:
 		_fire_wall_jump(state, config)
 	elif fires_double:
-		state.velocity.y = config.double_jump_velocity
+		_fire_double_jump(state, config)
 		state.double_jump_available = false
 
 	if state.jump_released and state.velocity.y < 0.0:
@@ -219,9 +243,21 @@ static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 	state.timers["jump_buffer"] = jump_buffer
 	state.timers["wall_coyote"] = wall_coyote
 
-## Away-from-wall (holding the opposite direction) is the strong jump;
-## anything else - including holding back into the wall, which SPEC.md
-## doesn't call out as its own case - falls back to the neutral one.
+## Three-way branch, per movement feel overhaul rule 5 (the one explicit
+## exception to "no special-cased wall logic" the request carves out):
+## away-from-wall (holding the opposite direction) is the strong jump,
+## neutral (no directional input) is the middle tier, and toward-the-wall
+## (holding back into it) is the weakest - previously toward and neutral
+## fired identically. wall_jump_velocity (away) is unchanged; wall_jump_
+## neutral_velocity keeps the exact value toward/neutral shared before
+## (rule 5: "replace the current toward wall jump with the neutral jump"
+## - since they were numerically identical already, that instruction and
+## "leave neutral's number alone" are the same edit); wall_jump_toward_
+## velocity is new and deliberately weaker on both axes, so regrabbing the
+## same wall afterward is possible (intended) but not instant - rules 2
+## and 3 (air control, double jump) govern how fast the player can
+## actually turn around and drift back, not this branch.
+##
 ## Uses last_wall_side rather than on_wall_left/right directly so this
 ## still resolves correctly during the wall_coyote window, once on_wall_*
 ## has already gone false.
@@ -229,9 +265,41 @@ static func _fire_wall_jump(state: MovementState, config: MovementConfig) -> voi
 	var wall_side := _current_wall_side(state)
 	var away_dir := -wall_side
 	var pressing_away := state.move_right if wall_side < 0.0 else state.move_left
+	var pressing_into := state.move_left if wall_side < 0.0 else state.move_right
 
-	var launch := config.wall_jump_velocity if pressing_away else config.wall_jump_neutral_velocity
+	var launch: Vector2
+	if pressing_away:
+		launch = config.wall_jump_velocity
+	elif pressing_into:
+		launch = config.wall_jump_toward_velocity
+	else:
+		launch = config.wall_jump_neutral_velocity
 	state.velocity = Vector2(away_dir * launch.x, launch.y)
+
+## Movement feel overhaul, rule 3: every double jump imparts a fixed
+## vertical launch (same hard-assignment pattern as the primary jump -
+## double_jump_velocity is untouched by this overhaul) plus a horizontal
+## impulse ADDED to (not replacing) whatever velocity.x already is, in
+## whichever direction is currently held - 0 when neither move_left nor
+## move_right is held, which is exactly what "with no direction held, the
+## double jump preserves current horizontal velocity" falls out of without
+## any special case. Additive rather than a hard assignment is what makes
+## "a directional double jump countering a dash never reverses the dash
+## direction" true by construction: it can only reduce an opposing dash's
+## speed, never flip its sign, as long as the impulse itself never exceeds
+## dash_speed - which the global "nothing exceeds dash speed" clamp at the
+## end of process() guarantees regardless of how double_jump_horizontal_
+## impulse gets tuned later. Its interaction with wall jumps and dashes is
+## exactly this one addition and nothing else - no branching on "am I
+## currently dashing" or "was that a wall jump," per the request.
+static func _fire_double_jump(state: MovementState, config: MovementConfig) -> void:
+	state.velocity.y = config.double_jump_velocity
+	var input_dir := 0.0
+	if state.move_left:
+		input_dir -= 1.0
+	if state.move_right:
+		input_dir += 1.0
+	state.velocity.x += input_dir * config.double_jump_horizontal_impulse
 
 static func _current_wall_side(state: MovementState) -> float:
 	if state.on_wall_left:
@@ -240,28 +308,15 @@ static func _current_wall_side(state: MovementState) -> float:
 		return 1.0
 	return state.last_wall_side
 
-## Milestone 4 tuning iteration 9: wall jumps no longer lock out horizontal
-## input at all - removed both the wall_jump_lockout window (used to grant
-## zero input authority for wall_jump_lockout_frames, friction-decaying the
-## launch velocity instead) and the wall_detach_grace horizontal pin (zero
-## authority, friction-decaying toward 0, for the rest of the grace window
-## after that). Per explicit request: the player should be able to
-## precisely control how far a wall jump carries by varying how long they
-## hold the movement key afterward, same as anywhere else airborne - the
-## old locked-out windows made the trajectory feel "scripted" instead of
-## responsive, in direct tension with SPEC.md section 3's "Full air
-## control" pillar (this was always a special-cased exception to it).
-## _fire_wall_jump still assigns the launch velocity directly as before;
-## from the very next frame on, ordinary input/accel/friction/turnaround
-## below governs it exactly like any other airborne movement - holding the
-## away direction keeps target_speed pulling toward max_run_speed (so a
-## strong wall jump's higher launch speed decays toward it, still carrying
-## further than releasing early would), releasing goes through the neutral
-## friction branch, and pressing back into the wall triggers the same
-## turnaround-boosted deceleration used everywhere else. wall_detach itself
-## is untouched by this - it still governs vertical cling behavior and wall
-## jump re-eligibility (see _update_wall_attachment/_apply_jump), just no
-## longer has any horizontal-authority side effect here.
+## Movement feel overhaul, rules 1 and 2 (renamed from _apply_run - the
+## ground and air cases are now different enough mechanisms, not one
+## formula with a shared multiplier, that splitting them into their own
+## functions reads clearer than one function with a branch buried inside
+## the math). Wall jumps and dashes still grant full input authority from
+## the very next frame on (milestone 4 tuning iteration 9's "no lockout"
+## carries forward unchanged) - what changes here is what that authority
+## actually DOES with opposing input, which now differs sharply between
+## ground and air.
 static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 	var input_dir := 0.0
 	if state.move_left:
@@ -269,17 +324,61 @@ static func _apply_run(state: MovementState, config: MovementConfig) -> void:
 	if state.move_right:
 		input_dir += 1.0
 
-	var accel := config.ground_acceleration if state.on_floor else config.air_acceleration
-	var friction := config.ground_friction if state.on_floor else config.air_friction
+	if state.on_floor:
+		_apply_ground_movement(state, config, input_dir)
+	else:
+		_apply_air_movement(state, config, input_dir)
 
+## Rule 1: ground direction changes are instantaneous. Opposing input does
+## NOT decelerate through a turnaround - velocity.x drops to 0 and
+## acceleration in the new direction begins on the SAME frame, both in one
+## step: move_toward's start point is 0 instead of the current (opposing)
+## velocity, so the result is already nonzero in the new direction by the
+## time this frame's math finishes. That's what keeps it from reading as a
+## stop - there's no frame where velocity.x is actually held at exactly 0,
+## the zero-crossing and the first step of new acceleration happen
+## together. Existing speed does not carry into the new direction (the
+## "from 0" start), matching "the player starts from zero and accelerates
+## normally." Same-direction input (or starting from rest) is completely
+## unaffected - ordinary move_toward from wherever velocity.x already is.
+##
+## Rule 4c carves out one exception: while a dash's nominal duration
+## window is still open (state.timers["dash_timer"] > 0, set by
+## _update_dash), opposing input does NOT get the instant snap above -
+## instead it fights the dash's momentum gradually, reusing rule 2's
+## air_acceleration rate, so the player can counteract a dash on the
+## ground but not cancel it outright in one frame. Same-direction input is
+## unaffected either way (there was never a "snap" to skip in that case).
+static func _apply_ground_movement(state: MovementState, config: MovementConfig, input_dir: float) -> void:
 	if input_dir != 0.0:
 		state.facing = input_dir
 		var target_speed := input_dir * config.max_run_speed
 		var opposing: bool = sign(state.velocity.x) != 0.0 and sign(state.velocity.x) != sign(input_dir)
-		var rate := accel * (config.turnaround_multiplier if opposing else 1.0)
-		state.velocity.x = move_toward(state.velocity.x, target_speed, rate)
+		if opposing and state.timers.get("dash_timer", 0) > 0:
+			state.velocity.x = move_toward(state.velocity.x, target_speed, config.air_acceleration)
+			return
+		var from := 0.0 if opposing else state.velocity.x
+		state.velocity.x = move_toward(from, target_speed, config.ground_acceleration)
 	else:
-		state.velocity.x = move_toward(state.velocity.x, 0.0, friction)
+		state.velocity.x = move_toward(state.velocity.x, 0.0, config.ground_friction)
+
+## Rule 2: air control is responsive but not absolute. One raised
+## acceleration constant (air_acceleration) applies whether input matches
+## or opposes current velocity - no separate turnaround boost, unlike the
+## old (pre-overhaul) formula this replaces. The transition through zero
+## is quick, since air_acceleration is substantially higher than before
+## the overhaul, but not instant like rule 1's ground case - a large but
+## finite per-frame step still takes several frames to cross zero, so real
+## momentum from wall jumps and dashes has to be fought rather than
+## overridden in a single frame. This is the deliberate contrast with rule
+## 1 that the request called out explicitly.
+static func _apply_air_movement(state: MovementState, config: MovementConfig, input_dir: float) -> void:
+	if input_dir != 0.0:
+		state.facing = input_dir
+		var target_speed := input_dir * config.max_run_speed
+		state.velocity.x = move_toward(state.velocity.x, target_speed, config.air_acceleration)
+	else:
+		state.velocity.x = move_toward(state.velocity.x, 0.0, config.air_friction)
 
 ## Gravity always applies while not wall-clinging, even when grounded: a
 ## small unconditional downward nudge is what lets collision resolution
@@ -388,23 +487,37 @@ static func _apply_gravity(state: MovementState, config: MovementConfig) -> void
 static func _touched_wall_with_momentum(state: MovementState) -> bool:
 	return (not state.on_floor) and (state.on_wall_left or state.on_wall_right)
 
-## Returns true if a dash controlled this frame's velocity (start,
-## continuing, or the frame it ends on), so process() knows to skip
-## jump/run/gravity entirely for this frame.
+## Movement feel overhaul, rule 4a: dash is a decaying impulse now, not a
+## fixed-duration scripted movement. On its start frame it directly
+## assigns a launch velocity (same instant-impulse pattern as a wall jump
+## or double jump) and nothing more - it does NOT return "skip everything
+## else" anymore. Gravity applies every frame from here on, including the
+## launch frame itself, same as it would for any other airborne velocity
+## (4a: "gravity applies at all times, including during every dash").
+##
+## Returns true only on the exact frame a dash launches (for rule 4d's
+## same-frame jump suppression in _apply_jump) - NOT "is a dash currently
+## controlling velocity," since nothing does that anymore except the
+## launch assignment itself. dash_timer's ongoing value (read directly
+## from state.timers by _apply_ground_movement) is the separate signal for
+## "is the nominal window still open," consulted for rule 4c.
 ##
 ## dash_cooldown gates a *new* dash and is checked before this frame's own
 ## decrement (same read-before-refresh reasoning as coyote/buffer), so it
-## blocks for exactly dash_cooldown_frames after a dash ends, not one
-## fewer. dash_available is a separate charge (refilled by _refill_abilities
-## on ground/wall contact) - both must be satisfied to start a dash.
+## blocks for exactly dash_cooldown_frames after the nominal window ends,
+## not one fewer - "Dash cooldown also still does not reset until this
+## timer is finished" (4c). dash_available is a separate charge (refilled
+## by _refill_abilities on ground/wall contact) - both must be satisfied
+## to start a dash.
 ##
 ## `just_started` prevents the wall-cancel check from firing on the same
 ## frame a dash begins (you can legitimately dash away from a wall you're
-## touching) and keeps duration at exactly dash_duration_frames regardless
-## of whether the timer set on the start frame gets decremented that same
-## frame or not - it does, uniformly, on every active frame including the
-## first.
-static func _apply_dash(state: MovementState, config: MovementConfig) -> bool:
+## touching) and keeps the nominal window at exactly dash_duration_frames
+## regardless of whether the timer set on the start frame gets decremented
+## that same frame or not - it does, uniformly, on every frame the window
+## is open including the first, so "the window is open" and "dash_timer >
+## 0" stay the same statement.
+static func _update_dash(state: MovementState, config: MovementConfig) -> bool:
 	var dash_timer: int = state.timers.get("dash_timer", 0)
 	var dash_cooldown: int = state.timers.get("dash_cooldown", 0)
 	var just_started := false
@@ -417,7 +530,15 @@ static func _apply_dash(state: MovementState, config: MovementConfig) -> bool:
 			return false
 
 		state.dash_direction = _dash_direction(state)
-		state.velocity = state.dash_direction * config.dash_speed
+		var launch := state.dash_direction * config.dash_speed
+		# Rule 4b: diagonal (nonzero x) upward dashes get their Y component
+		# boosted to compensate for gravity now applying throughout the
+		# dash (4a) - they'd otherwise fall short of their old reach.
+		# Straight-up dashes (zero x) are NOT boosted: "they were too
+		# strong already; gravity applying is the correction."
+		if state.dash_direction.x != 0.0 and state.dash_direction.y < 0.0:
+			launch.y *= config.dash_diagonal_up_vertical_boost
+		state.velocity = launch
 		state.dash_available = false
 		dash_timer = config.dash_duration_frames
 		just_started = true
@@ -430,20 +551,12 @@ static func _apply_dash(state: MovementState, config: MovementConfig) -> bool:
 	if ending:
 		if cancelled_by_wall:
 			state.dash_available = true
-		else:
-			state.velocity.x *= config.dash_exit_horizontal_retention
-			# Milestone 4 tuning iteration 2: upward dashes used to stop
-			# dead here (velocity.y zeroed) - now retained like the
-			# horizontal axis, just through a separate knob so the two
-			# can be tuned independently.
-			if state.velocity.y < 0.0:
-				state.velocity.y *= config.dash_exit_retention_vertical
 		dash_timer = 0
 		dash_cooldown = config.dash_cooldown_frames
 
 	state.timers["dash_timer"] = dash_timer
 	state.timers["dash_cooldown"] = dash_cooldown
-	return true
+	return just_started
 
 ## 8-way snap from held move/look directions; neutral input dashes in the
 ## current facing direction instead.

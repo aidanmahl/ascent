@@ -11,8 +11,6 @@ extends Resource
 @export var ground_friction: float = 0.40
 @export var air_acceleration: float = 0.0765
 @export var air_friction: float = 0.10
-## Accel multiplier applied when input opposes current velocity.
-@export var turnaround_multiplier: float = 1.8
 
 @export_group("Gravity & Jump")
 @export var gravity: float = 0.405
@@ -25,21 +23,39 @@ extends Resource
 @export var apex_hang_threshold: float = 1.0
 @export var coyote_frames: int = 6
 @export var jump_buffer_frames: int = 8
+## Vertical launch, same pattern as jump_velocity/wall_jump_velocity - a
+## hard assignment, unaffected by held direction.
 @export var double_jump_velocity: float = -5.8
+## Horizontal component of a double jump's redirect - ADDED to (not
+## replacing) whatever velocity.x already is, in the held direction; 0
+## when no direction is held (movement feel overhaul, rule 3). Additive
+## rather than a hard assignment specifically so a double jump can never
+## reverse a dash's direction outright (see the dash_speed clamp in
+## PlayerMovement.process) - it can only fight momentum, same spirit as
+## rule 2's air control.
+@export var double_jump_horizontal_impulse: float = 3.5
 
 @export_group("Dash")
+## Nominal duration - no longer "how long dash owns the frame" (movement
+## feel overhaul, rule 4a: dash is a decaying impulse subject to normal
+## gravity/accel/friction from the moment it launches). Now purely a
+## gating window: how long rule 1's instant ground turnaround stays
+## suppressed in favor of rule 2-style gradual fighting (4c), how long
+## before dash_cooldown starts counting, and how long the same-frame jump
+## suppression (4d) can matter.
 @export var dash_duration_frames: int = 12
 @export var dash_speed: float = 7.0
-## Frames after a dash ends before another can start, on top of needing
-## dash_available (refilled separately by ground/wall contact).
+## Frames after a dash's nominal duration ends before another can start,
+## on top of needing dash_available (refilled separately by ground/wall
+## contact).
 @export var dash_cooldown_frames: int = 6
-## Fraction of dash speed kept on the horizontal axis when a dash ends
-## naturally (not cancelled by a wall).
-@export var dash_exit_horizontal_retention: float = 0.6
-## Fraction of dash speed kept on the vertical axis when an upward dash
-## ends naturally - a separate knob from the horizontal one so either can
-## be tuned without coupling to the other.
-@export var dash_exit_retention_vertical: float = 0.6
+## Multiplier applied to the Y component only of a diagonal (nonzero X)
+## upward dash's launch velocity - compensates for gravity now applying
+## throughout the dash (rule 4a) so diagonal-up dashes retain their
+## intended reach. Straight-up dashes (zero X) are NOT boosted - they were
+## already strong enough before gravity applied continuously; gravity
+## applying now is their correction, not something to compensate for.
+@export var dash_diagonal_up_vertical_boost: float = 1.4
 
 @export_group("Wall")
 @export var wall_slide_max_fall_speed: float = 1.5
@@ -55,8 +71,15 @@ extends Resource
 ## Wall jump while holding away from the wall - the strong one (more
 ## distance). Sign is resolved at jump time from which wall is touched.
 @export var wall_jump_velocity: Vector2 = Vector2(4.0, -6.0)
-## Wall jump with no directional input held - more height, less distance.
+## Wall jump with no directional input held - the middle tier: more
+## distance than toward, less than away.
 @export var wall_jump_neutral_velocity: Vector2 = Vector2(3.0, -6.5)
+## Wall jump while holding INTO the wall - the weakest tier (movement feel
+## overhaul, rule 5). Regrabbing the same wall afterward is intended to be
+## possible with this one, just not instant - rules 2/3 (air control,
+## double jump) govern how fast the player can actually turn around and
+## drift back, not special-cased wall logic.
+@export var wall_jump_toward_velocity: Vector2 = Vector2(1.5, -6.0)
 ## Frames of holding away (or neutral) before cling actually releases -
 ## the player stays attached (zero/capped gravity per the cling/slide
 ## rules) and a wall jump remains available throughout. Without this,

@@ -39,15 +39,16 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("wall_cling_zero_gravity_then_slide_cap", _test_wall_cling_then_slide)
 	runner.register("wall_slide_caps_fall_speed_from_faster_initial_fall", _test_wall_slide_caps_fall_speed)
 	runner.register("wall_jump_away_from_wall_is_strong", _test_wall_jump_away_is_strong)
-	runner.register("wall_jump_neutral_is_weak_and_high", _test_wall_jump_neutral_is_weak_and_high)
+	runner.register("wall_jump_neutral_is_middle_tier", _test_wall_jump_neutral_is_middle_tier)
+	runner.register("wall_jump_toward_is_weakest_tier", _test_wall_jump_toward_is_weakest_tier)
 	runner.register("wall_detection_from_real_collision", _test_wall_detection_from_real_collision)
 	runner.register("dash_bound_to_left_shift_only", _test_dash_bound_to_left_shift_only)
-	runner.register("dash_exactly_12_frames_at_constant_speed_unaffected_by_gravity", _test_dash_duration_and_constant_speed)
+	runner.register("dash_decays_under_gravity_and_normal_movement", _test_dash_decays_under_gravity_and_normal_movement)
 	runner.register("dash_refills_only_on_ground_or_wall_contact", _test_dash_refill_only_on_ground_or_wall_contact)
 	runner.register("double_jump_available_once_per_airborne_period", _test_double_jump_available_once_per_airborne_period)
 	runner.register("dash_direction_snapping", _test_dash_direction_snapping)
-	runner.register("dash_exit_velocity_retention_horizontal", _test_dash_exit_velocity_retention)
-	runner.register("dash_exit_retains_upward_vertical_velocity", _test_dash_exit_retains_upward_vertical_velocity)
+	runner.register("dash_no_discontinuity_crossing_nominal_duration_boundary", _test_dash_no_discontinuity_crossing_nominal_duration_boundary)
+	runner.register("dash_diagonal_up_boosted_but_straight_up_is_not", _test_dash_diagonal_up_boosted_but_straight_up_is_not)
 	runner.register("dash_cancels_on_wall_contact_and_refills", _test_dash_cancels_on_wall_contact_and_refills)
 	runner.register("dash_cooldown_blocks_second_dash_for_exactly_6_frames", _test_dash_cooldown_blocks_second_dash)
 	runner.register("wall_cling_no_freeze_while_rising", _test_wall_cling_no_freeze_while_rising)
@@ -68,6 +69,15 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("wall_cling_initiates_from_momentum_without_held_input", _test_wall_cling_initiates_from_momentum_without_held_input)
 	runner.register("wall_cling_does_not_initiate_from_motionless_touch", _test_wall_cling_does_not_initiate_from_motionless_touch)
 	runner.register("neutral_jump_from_ground_against_wall_does_not_cling", _test_neutral_jump_from_ground_against_wall_does_not_cling)
+	runner.register("ground_direction_change_is_instant", _test_ground_direction_change_is_instant)
+	runner.register("air_direction_change_is_gradual_not_instant", _test_air_direction_change_is_gradual_not_instant)
+	runner.register("double_jump_redirect_is_additive", _test_double_jump_redirect_is_additive)
+	runner.register("dash_ground_window_cannot_be_fully_cancelled", _test_dash_ground_window_cannot_be_fully_cancelled)
+	runner.register("dash_same_frame_jump_is_buffered_not_dropped", _test_dash_same_frame_jump_is_buffered_not_dropped)
+	runner.register("no_horizontal_speed_ever_exceeds_dash_speed", _test_no_horizontal_speed_ever_exceeds_dash_speed)
+	runner.register("double_jump_never_reverses_dash_direction", _test_double_jump_never_reverses_dash_direction)
+	runner.register("away_wall_jump_cannot_regrab_wall_quickly", _test_away_wall_jump_cannot_regrab_wall_quickly)
+	runner.register("no_velocity_discontinuity_except_rule_1", _test_no_velocity_discontinuity_except_rule_1)
 
 func _default_config() -> MovementConfig:
 	return load("res://src/movement/default_movement_config.tres")
@@ -309,16 +319,16 @@ func _check_action_key(action: String, expected_keycode: Key) -> String:
 ## collision resolution, which _test_wall_detection_from_real_collision
 ## covers separately.
 
-## Milestone 4 tuning iteration 9: wall jumps used to lock out horizontal
-## input for wall_jump_lockout_frames (a "commitment window") before this
-## - explicitly removed per request, since the scripted, unresponsive
-## trajectory it produced was in direct tension with SPEC.md section 3's
-## "Full air control" pillar and made it impossible to judge distance by
-## variable hold duration. Fires a strong (away) wall jump, then holds the
+## Milestone 4 tuning iteration 9 removed the old wall-jump input lockout
+## (a "commitment window") - carries forward unchanged through the
+## movement feel overhaul. Fires a strong (away) wall jump, then holds the
 ## OPPOSITE (back into the wall) direction starting the very next frame -
 ## if input has genuine immediate authority, vx should already be
-## decelerating via the real turnaround-boosted rate at frame 1, not still
-## following a frozen/friction-only curve.
+## decelerating via rule 2's uniform air_acceleration at frame 1, not
+## still following a frozen/friction-only curve. (Airborne the whole test,
+## so this exercises _apply_air_movement, not the ground/rule-1 path -
+## same accel rate applies whether input matches or opposes velocity,
+## unlike the pre-overhaul formula this replaces.)
 func _test_wall_jump_grants_immediate_input_authority() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
@@ -331,10 +341,8 @@ func _test_wall_jump_grants_immediate_input_authority() -> String:
 
 	var expected: float = history[0].velocity.x
 	for i in range(1, history.size()):
-		var opposing: bool = sign(expected) != 0.0 and sign(expected) != sign(-1.0)
-		var rate := config.air_acceleration * (config.turnaround_multiplier if opposing else 1.0)
-		expected = move_toward(expected, -config.max_run_speed, rate)
-		var failure := Expect.approx(history[i].velocity.x, expected, "vx at frame %d should already reflect the held opposing input via the real turnaround-boosted rate, not a frozen or friction-only curve" % i)
+		expected = move_toward(expected, -config.max_run_speed, config.air_acceleration)
+		var failure := Expect.approx(history[i].velocity.x, expected, "vx at frame %d should already reflect the held opposing input via rule 2's uniform air acceleration, not a frozen or friction-only curve" % i)
 		if failure != "":
 			return failure
 	return ""
@@ -418,10 +426,13 @@ func _test_wall_jump_away_is_strong() -> String:
 		return failure
 	return Expect.approx(vel.y, config.wall_jump_velocity.y + config.gravity, "strong wall jump vy (one frame of gravity already applied)")
 
-## No directional input held here, so vx goes through the neutral friction
-## branch (not accel) this same frame - one frame of air_friction already
-## decaying it toward 0, same idea as the strong-jump test above.
-func _test_wall_jump_neutral_is_weak_and_high() -> String:
+## Movement feel overhaul, rule 5: neutral is now the MIDDLE of three
+## tiers (away > neutral > toward), not simply "the weak one" - toward is
+## weaker still, see the test below. No directional input held here, so
+## vx goes through the neutral friction branch (not accel) this same
+## frame - one frame of air_friction already decaying it toward 0, same
+## idea as the strong-jump test above.
+func _test_wall_jump_neutral_is_middle_tier() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
 	var frames: Array[Dictionary] = [{"on_wall_left": true, "jump_pressed": true}]
@@ -432,6 +443,28 @@ func _test_wall_jump_neutral_is_weak_and_high() -> String:
 	if failure != "":
 		return failure
 	return Expect.approx(vel.y, config.wall_jump_neutral_velocity.y + config.gravity, "neutral wall jump vy (one frame of gravity already applied)")
+
+## Movement feel overhaul, rule 5: holding INTO the wall at fire time now
+## selects the new weakest tier (wall_jump_toward_velocity) - previously
+## identical to neutral. Held input this same frame pulls vx via rule 2's
+## uniform air formula (holding left while the launch goes right, away
+## from this left wall, so input opposes the launch direction - no
+## separate turnaround boost either way, same accel rate regardless).
+func _test_wall_jump_toward_is_weakest_tier() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	var frames: Array[Dictionary] = [{"on_wall_left": true, "jump_pressed": true, "move_left": true}]
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var vel := history[0].velocity
+	var expected_vx := move_toward(config.wall_jump_toward_velocity.x, -config.max_run_speed, config.air_acceleration)
+	var failure := Expect.approx(vel.x, expected_vx, "toward-wall wall jump vx (holding into the wall - one frame of air_acceleration already pulling it toward -max_run_speed, since held input opposes the away-launch direction)")
+	if failure != "":
+		return failure
+	failure = Expect.approx(vel.y, config.wall_jump_toward_velocity.y + config.gravity, "toward-wall wall jump vy (one frame of gravity already applied)")
+	if failure != "":
+		return failure
+	return Expect.is_true(config.wall_jump_toward_velocity.x < config.wall_jump_neutral_velocity.x and config.wall_jump_neutral_velocity.x < config.wall_jump_velocity.x, "the three tiers should be strictly ordered on the horizontal axis: toward < neutral < away")
 
 ## Proves on_wall_right actually gets set by real TileCollision resolution,
 ## not just by the direct injection every other wall test uses to isolate
@@ -477,33 +510,38 @@ func _test_dash_bound_to_left_shift_only() -> String:
 		return "right shift should NOT match the 'dash' action (must be left-shift only)"
 	return ""
 
-## The dash is active for exactly dash_duration_frames frames (returns
-## true from _apply_dash that many times). Exit-velocity retention is
-## applied within that same last active frame rather than a 13th frame
-## after it - simpler than deferring it across a frame boundary, and still
-## exactly 12 frames of the dash controlling velocity, per SPEC.md. So
-## frames 0..(duration-2) show fully undiminished speed, and the last
-## frame already reflects the retained value.
-func _test_dash_duration_and_constant_speed() -> String:
+## Movement feel overhaul, rule 4a: dash is a decaying impulse now, not a
+## fixed-duration constant-speed scripted movement - directly replaces the
+## old "dash_exactly_12_frames_at_constant_speed_unaffected_by_gravity"
+## test, which asserted exactly the behavior this rule explicitly kills.
+## Checks the qualitative properties the rule actually cares about rather
+## than re-deriving the exact per-frame formula (already covered precisely
+## elsewhere, e.g. _test_wall_jump_grants_immediate_input_authority):
+## gravity visibly and continuously acts on vy from the very first frame
+## (never frozen at 0, not even on the launch frame itself), and vx is
+## never held constant at the raw launch speed - it's already measurably
+## decayed by the time the nominal window ends.
+func _test_dash_decays_under_gravity_and_normal_movement() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
 	state.dash_available = true
 
 	var frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
 	for i in range(15):
-		frames.append({})
+		frames.append({"move_right": false})
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
-	for i in range(config.dash_duration_frames - 1):
-		var failure := Expect.approx(history[i].velocity.x, config.dash_speed, "vx during dash at frame %d should stay at constant dash speed" % i)
-		if failure != "":
-			return failure
-		failure = Expect.approx(history[i].velocity.y, 0.0, "vy during dash at frame %d should be untouched by gravity" % i)
+	var failure := Expect.is_true(history[0].velocity.y > 0.0, "gravity should already be visibly acting on vy on the dash's own launch frame - rule 4a: gravity applies at all times, including during every dash")
+	if failure != "":
+		return failure
+
+	for i in range(1, history.size()):
+		failure = Expect.is_true(history[i].velocity.y > history[i - 1].velocity.y, "vy should keep accumulating gravity every frame throughout the dash's nominal window, frame %d" % i)
 		if failure != "":
 			return failure
 
-	var last_active := config.dash_duration_frames - 1
-	return Expect.approx(history[last_active].velocity.x, config.dash_speed * config.dash_exit_horizontal_retention, "vx on the dash's final active frame should already reflect exit retention")
+	var end_of_window := config.dash_duration_frames - 1
+	return Expect.is_true(history[end_of_window].velocity.x < config.dash_speed - 0.01, "vx should already be measurably decayed from the raw launch speed (%s) by the end of the nominal duration window, not held constant" % history[end_of_window].velocity.x)
 
 ## _refill_abilities runs after _resolve_collision, using this frame's real
 ## (post-resolution) on_floor - unlike most other wall/floor tests, it
@@ -601,37 +639,55 @@ func _test_dash_direction_snapping() -> String:
 	var h3 := InputPlayback.run(s3, config, f3, PlayerMovement.process)
 	return Expect.approx(h3[0].dash_direction.x, -1.0, "neutral-input dash should use current facing, not always right")
 
-func _test_dash_exit_velocity_retention() -> String:
+## Movement feel overhaul, rule 4a: there is no scripted "exit" event
+## anymore - decay is continuous under normal gravity/accel/friction, so
+## the frame the nominal duration window closes should look like any other
+## frame, not a snap. Replaces the old horizontal exit-retention test,
+## which asserted a mechanism (dash_exit_horizontal_retention) this rule
+## removed outright.
+func _test_dash_no_discontinuity_crossing_nominal_duration_boundary() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
 	state.dash_available = true
 
 	var frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
-	for i in range(20):
-		frames.append({})
+	for i in range(config.dash_duration_frames + 5):
+		frames.append({"move_right": false})
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
-	var exit_frame := config.dash_duration_frames - 1
-	var expected_vx: float = config.dash_speed * config.dash_exit_horizontal_retention
-	return Expect.approx(history[exit_frame].velocity.x, expected_vx, "vx right as a horizontal dash ends should retain dash_exit_horizontal_retention of dash speed")
+	var boundary := config.dash_duration_frames - 1
+	var max_expected_delta: float = config.air_friction + 0.01
+	var delta := absf(history[boundary + 1].velocity.x - history[boundary].velocity.x)
+	return Expect.is_true(delta <= max_expected_delta, "vx crossing the dash's nominal-duration boundary (frame %d -> %d) should change by at most one frame's worth of normal air friction (delta %s, max expected %s) - no scripted exit event left to snap at" % [boundary, boundary + 1, delta, max_expected_delta])
 
-## Milestone 4 tuning iteration 2: upward dashes used to stop dead at exit
-## (velocity.y zeroed) - now retained through dash_exit_retention_vertical,
-## the same way horizontal exit velocity already was, so a dash upward
-## feels like a launch that carries rather than a hard stop.
-func _test_dash_exit_retains_upward_vertical_velocity() -> String:
+## Movement feel overhaul, rule 4b: diagonal (nonzero x) upward dashes get
+## their Y component boosted via dash_diagonal_up_vertical_boost, to
+## compensate for gravity now applying throughout the dash (4a) - straight-
+## up dashes (zero x) do NOT get this boost ("they were too strong
+## already; gravity applying is the correction"). Replaces the old
+## upward-exit-retention test, which asserted a mechanism (dash_exit_
+## retention_vertical) this rule removed outright. Checks vy only - the
+## boost is Y-only by design (4a's dash-speed invariant governs vx
+## separately, unaffected by this).
+func _test_dash_diagonal_up_boosted_but_straight_up_is_not() -> String:
 	var config := _default_config()
-	var state := MovementState.new()
-	state.dash_available = true
 
-	var frames: Array[Dictionary] = [{"dash_pressed": true, "look_up": true}]
-	for i in range(20):
-		frames.append({})
-	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+	var diag_state := MovementState.new()
+	diag_state.dash_available = true
+	var diag_frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true, "look_up": true}]
+	var diag_history := InputPlayback.run(diag_state, config, diag_frames, PlayerMovement.process)
+	var diag: float = sqrt(0.5)
+	var expected_diag_vy := -config.dash_speed * diag * config.dash_diagonal_up_vertical_boost + config.gravity
+	var failure := Expect.approx(diag_history[0].velocity.y, expected_diag_vy, "diagonal upward dash's vy should be boosted by dash_diagonal_up_vertical_boost (plus one frame of gravity already applied)")
+	if failure != "":
+		return failure
 
-	var exit_frame := config.dash_duration_frames - 1
-	var expected_vy: float = -config.dash_speed * config.dash_exit_retention_vertical
-	return Expect.approx(history[exit_frame].velocity.y, expected_vy, "vertical velocity right as an upward dash ends should retain dash_exit_retention_vertical of dash speed, not zero out")
+	var straight_state := MovementState.new()
+	straight_state.dash_available = true
+	var straight_frames: Array[Dictionary] = [{"dash_pressed": true, "look_up": true}]
+	var straight_history := InputPlayback.run(straight_state, config, straight_frames, PlayerMovement.process)
+	var expected_straight_vy := -config.dash_speed + config.gravity
+	return Expect.approx(straight_history[0].velocity.y, expected_straight_vy, "straight-up dash's vy should NOT be boosted (plus one frame of gravity already applied) - gravity applying throughout is its correction, not something to compensate for")
 
 func _test_dash_cancels_on_wall_contact_and_refills() -> String:
 	var config := _default_config()
@@ -991,9 +1047,11 @@ func _run_wall_coyote_scenario(config: MovementConfig, frames_after_losing_conta
 ## that pin entirely, per explicit request for full, immediate air control
 ## after leaving a wall (SPEC.md section 3's "Full air control" pillar).
 ## This test now asserts the opposite of what it used to: held opposing
-## input should produce normal, real (turnaround-boosted) deceleration
-## starting the very next frame, all the way through what used to be the
-## whole grace window - no pin, no delay, at any point.
+## input should produce normal rule 2 air deceleration starting the very
+## next frame, all the way through what used to be the whole grace window -
+## no pin, no delay, at any point. Airborne throughout, so this exercises
+## _apply_air_movement's single uniform accel rate (no turnaround
+## distinction, per the movement feel overhaul).
 func _test_wall_detach_grace_no_longer_locks_horizontal_movement() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
@@ -1006,10 +1064,8 @@ func _test_wall_detach_grace_no_longer_locks_horizontal_movement() -> String:
 
 	var expected: float = history[0].velocity.x
 	for i in range(1, config.wall_detach_grace + 1):
-		var opposing: bool = sign(expected) != 0.0 and sign(expected) != sign(1.0)
-		var rate := config.air_acceleration * (config.turnaround_multiplier if opposing else 1.0)
-		expected = move_toward(expected, config.max_run_speed, rate)
-		var failure := Expect.approx(history[i].velocity.x, expected, "vx during what used to be the detach grace window at frame %d should follow normal turnaround-boosted input response, not stay pinned at 0" % i)
+		expected = move_toward(expected, config.max_run_speed, config.air_acceleration)
+		var failure := Expect.approx(history[i].velocity.x, expected, "vx during what used to be the detach grace window at frame %d should follow normal air-control input response, not stay pinned at 0" % i)
 		if failure != "":
 			return failure
 	return ""
@@ -1235,7 +1291,11 @@ func _test_wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity()
 		frames.append({"move_left": false, "move_right": true})
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
 
-	var max_expected_delta: float = maxf(config.air_friction, config.air_acceleration * config.turnaround_multiplier) + 0.02
+	# Rule 2 removed the separate turnaround boost for air movement - one
+	# uniform air_acceleration rate applies whether input matches or
+	# opposes velocity, so the bound is just the larger of that and
+	# air_friction (the neutral-release case), no multiplier involved.
+	var max_expected_delta: float = maxf(config.air_friction, config.air_acceleration) + 0.02
 
 	for i in range(1, history.size() - 1):
 		var delta := absf(history[i + 1].velocity.x - history[i].velocity.x)
@@ -1369,3 +1429,308 @@ func _test_neutral_jump_from_ground_against_wall_does_not_cling() -> String:
 		if not s.on_floor:
 			peak_vy = maxf(peak_vy, s.velocity.y)
 	return Expect.is_true(peak_vy > config.wall_slide_max_fall_speed + 0.001, "a neutral jump performed right next to a wall (after running into it along the ground) should not cling - peak vy while airborne (%s) should exceed the wall-slide cap, proving normal gravity was in effect" % peak_vy)
+
+## Movement feel overhaul regression suite (PROMPT.md). Per-rule coverage
+## first, then the 4 explicit required invariants.
+
+## Rule 1: pressing the opposite direction while running on the ground
+## does not decelerate through a turnaround - velocity.x drops to 0 and
+## acceleration in the new direction begins on the SAME frame, so it's
+## already nonzero (in the new direction) by the time this frame's math
+## finishes, not sitting at exactly 0.
+func _test_ground_direction_change_is_instant() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+
+	var run_frames := InputPlayback.hold({"on_floor": true, "move_right": true}, 30)
+	var run_history := InputPlayback.run(state, config, run_frames, PlayerMovement.process)
+	var setup_failure := Expect.approx(run_history[-1].velocity.x, config.max_run_speed, "test setup problem: player should have reached max_run_speed before testing the flip")
+	if setup_failure != "":
+		return setup_failure
+
+	var flip_frames := InputPlayback.hold({"on_floor": true, "move_right": false, "move_left": true}, 1)
+	var flip_history := InputPlayback.run(state, config, flip_frames, PlayerMovement.process)
+	var expected := move_toward(0.0, -config.max_run_speed, config.ground_acceleration)
+	var failure := Expect.approx(flip_history[0].velocity.x, expected, "vx on the flip frame should read as zero-then-accelerated in the new direction (%s), not a partial decay from the old running speed" % expected)
+	if failure != "":
+		return failure
+	return Expect.is_true(flip_history[0].velocity.x < 0.0, "vx on the flip frame should already be moving in the new (negative) direction - that's what keeps rule 1 from reading as a stop")
+
+## Rule 2: the same direction-flip scenario as rule 1's ground test, but
+## airborne - opposing input should NOT snap to 0 instantly. The
+## transition through zero is quick (air_acceleration is substantially
+## raised) but still takes multiple frames, the deliberate contrast with
+## rule 1's ground case.
+func _test_air_direction_change_is_gradual_not_instant() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.velocity.x = config.max_run_speed
+
+	var frames := InputPlayback.hold({"move_left": true}, 1)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	return Expect.is_true(history[0].velocity.x > 0.0, "vx one frame after flipping input while airborne should still be positive (moving in the OLD direction) - rule 2 fights momentum gradually, it doesn't snap to 0 or reverse in a single frame like rule 1's ground case")
+
+## Rule 3: a directional double jump ADDS the horizontal impulse to
+## whatever velocity.x already is (not a hard assignment) - holding a
+## direction increases speed in that direction by double_jump_horizontal_
+## impulse; holding neither direction leaves velocity.x completely
+## untouched by the redirect itself ("preserves current horizontal
+## velocity").
+func _test_double_jump_redirect_is_additive() -> String:
+	var config := _default_config()
+
+	var directional_state := MovementState.new()
+	directional_state.double_jump_available = true
+	directional_state.velocity.x = 1.0
+	var directional_frames: Array[Dictionary] = [{"jump_pressed": true, "move_right": true}]
+	var directional_history := InputPlayback.run(directional_state, config, directional_frames, PlayerMovement.process)
+	var expected_directional_vx := move_toward(1.0 + config.double_jump_horizontal_impulse, config.max_run_speed, config.air_acceleration)
+	var failure := Expect.approx(directional_history[0].velocity.x, expected_directional_vx, "directional double jump should ADD double_jump_horizontal_impulse to existing vx (then one frame of air_acceleration already pulling it toward max_run_speed, same held-input convention as everywhere else), not replace vx outright")
+	if failure != "":
+		return failure
+	failure = Expect.approx(directional_history[0].velocity.y, config.double_jump_velocity + config.gravity, "double jump vy should fire the usual vertical launch regardless of horizontal redirect (one frame of gravity already applied)")
+	if failure != "":
+		return failure
+
+	var neutral_state := MovementState.new()
+	neutral_state.double_jump_available = true
+	neutral_state.velocity.x = 1.75
+	var neutral_frames: Array[Dictionary] = [{"jump_pressed": true}]
+	var neutral_history := InputPlayback.run(neutral_state, config, neutral_frames, PlayerMovement.process)
+	var expected_neutral_vx := move_toward(1.75, 0.0, config.air_friction)
+	return Expect.approx(neutral_history[0].velocity.x, expected_neutral_vx, "double jump with no direction held should leave vx untouched by the redirect itself ('preserves current horizontal velocity') - one frame of ordinary neutral-air friction decay still applies, same as any other airborne frame")
+
+## Rule 4c: holding full opposite input through an entire GROUNDED dash
+## never fully zeroes (or reverses) velocity.x before the nominal duration
+## ends - the player can counteract it, not cancel it outright. Rule 1's
+## instant snap resumes the moment the window closes.
+##
+## dash_timer is set to dash_duration_frames on the launch frame and
+## decremented every frame INCLUDING that one (same pattern the old wall-
+## jump lockout timer used), so by the LAST frame of the nominal count,
+## the timer has already ticked to 0 for that frame's own decision - the
+## window is effectively gated for dash_duration_frames - 1 frames, and
+## the final frame already shows rule 1 resumed. Same read-after-decrement
+## characteristic, not a new inconsistency.
+func _test_dash_ground_window_cannot_be_fully_cancelled() -> String:
+	var config := _default_config()
+	var floor_row := 5
+	var solid_tiles: Dictionary = {}
+	for col in range(-50, 50):
+		solid_tiles[Vector2i(col, floor_row)] = true
+	var state := MovementState.new()
+	state.dash_available = true
+	state.on_floor = true
+	state.position = Vector2(0, float(floor_row * config.tile_size) - 8.0)
+
+	var frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
+	for i in range(config.dash_duration_frames - 1):
+		frames.append({"move_right": false, "move_left": true})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	var last_gated_frame := config.dash_duration_frames - 2
+	for i in range(last_gated_frame + 1):
+		var failure := Expect.is_true(history[i].velocity.x > 0.0, "vx at frame %d (%s) should still be positive (same sign as the dash) - full opposite input for the whole grounded dash window should reduce it, never fully cancel or reverse it before the nominal duration ends" % [i, history[i].velocity.x])
+		if failure != "":
+			return failure
+
+	var resumed_frame := config.dash_duration_frames - 1
+	var expected := move_toward(0.0, -config.max_run_speed, config.ground_acceleration)
+	return Expect.approx(history[resumed_frame].velocity.x, expected, "the frame the dash's nominal window closes, rule 1's instant ground turnaround should resume immediately")
+
+## Rule 4d: a jump pressed on the exact frame a dash starts does not fire
+## that frame - it's buffered and fires exactly one frame later, not
+## dropped. Uses the double-jump charge as the "did it actually fire"
+## signal (consumed only on a real fire) so this doesn't get tangled up in
+## ground/coyote eligibility. dash_timer/dash_cooldown are never read or
+## written anywhere in _apply_jump/_fire_double_jump, so there's no code
+## path for a jump firing to disturb either - not re-tested here
+## separately (see _test_dash_cooldown_blocks_second_dash for the
+## cooldown-timing property itself, unaffected by whatever else happens
+## mid-window).
+func _test_dash_same_frame_jump_is_buffered_not_dropped() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.dash_available = true
+	state.double_jump_available = true
+
+	var frames: Array[Dictionary] = [{"dash_pressed": true, "jump_pressed": true, "move_right": true}]
+	frames.append({"jump_pressed": false})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var failure := Expect.is_true(history[0].double_jump_available, "the double jump charge should NOT be consumed on the dash's own launch frame - the jump must not fire the same frame the dash starts")
+	if failure != "":
+		return failure
+	failure = Expect.is_false(history[1].double_jump_available, "the buffered jump should fire exactly one frame later (consuming the double jump charge), not be dropped")
+	if failure != "":
+		return failure
+	return Expect.is_false(history[1].dash_available, "the double jump firing mid-dash should not spuriously refill the dash charge - only real ground/wall contact does that")
+
+## Required invariant: no horizontal speed anywhere in the game ever
+## exceeds dash_speed. The global clamp in PlayerMovement.process()
+## guarantees this structurally; checked against a real dash sequence and
+## against the specific case the clamp exists for (a directional double
+## jump added on top of velocity already at dash speed).
+func _test_no_horizontal_speed_ever_exceeds_dash_speed() -> String:
+	var config := _default_config()
+	var limit := config.dash_speed + 0.001
+
+	var dash_state := MovementState.new()
+	dash_state.dash_available = true
+	var dash_frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
+	for i in range(40):
+		dash_frames.append({"move_right": true})
+	var dash_history := InputPlayback.run(dash_state, config, dash_frames, PlayerMovement.process)
+	for i in range(dash_history.size()):
+		var failure := Expect.is_true(absf(dash_history[i].velocity.x) <= limit, "dash alone: vx at frame %d (%s) should never exceed dash_speed" % [i, dash_history[i].velocity.x])
+		if failure != "":
+			return failure
+
+	var stacked_state := MovementState.new()
+	stacked_state.double_jump_available = true
+	stacked_state.velocity.x = config.dash_speed
+	var stacked_frames: Array[Dictionary] = [{"jump_pressed": true, "move_right": true}]
+	for i in range(10):
+		stacked_frames.append({"jump_pressed": false, "move_right": true})
+	var stacked_history := InputPlayback.run(stacked_state, config, stacked_frames, PlayerMovement.process)
+	for i in range(stacked_history.size()):
+		var failure := Expect.is_true(absf(stacked_history[i].velocity.x) <= limit, "double jump redirect stacked on top of dash-speed velocity: vx at frame %d (%s) should never exceed dash_speed" % [i, stacked_history[i].velocity.x])
+		if failure != "":
+			return failure
+	return ""
+
+## Required invariant: a directional double jump countering a dash never
+## reverses the dash's direction - guaranteed by the additive (not
+## replacing) redirect model (rule 3), as long as the impulse itself stays
+## under dash_speed (the global clamp's job, see the test above). Checked
+## in the frames immediately around the double jump firing, not
+## indefinitely - sustained opposite input for long enough will
+## eventually turn the player around through entirely ordinary rule 2
+## deceleration once the dash's original impulse has dissipated, which is
+## expected normal play, not the double jump "reversing" anything.
+func _test_double_jump_never_reverses_dash_direction() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+	state.dash_available = true
+	state.double_jump_available = true
+
+	var frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true}]
+	frames.append({"jump_pressed": true, "move_left": true, "move_right": false})
+	for i in range(3):
+		frames.append({"jump_pressed": false, "move_left": true})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	for i in range(history.size()):
+		var failure := Expect.is_true(history[i].velocity.x >= -0.001, "vx at frame %d (%s) should never go negative - a double jump fired immediately out of a rightward dash, held full opposite (left), should reduce the dash's speed but never reverse its direction" % [i, history[i].velocity.x])
+		if failure != "":
+			return failure
+	return ""
+
+## Required invariant, rule 5: after an away-from-wall wall jump, full
+## opposite input (back toward the wall) plus a directional double jump
+## should not let the player regrab the same wall within a short window -
+## away wall jumps carry enough speed that air control and a directional
+## double jump can't bleed it off fast enough to return in any meaningful
+## timeframe.
+##
+## Waits out wall_detach_grace + wall_coyote_time first before firing the
+## second jump: a wall jump remains available (can_wall_jump) for the
+## entire wall_detach_grace window regardless of actual distance from the
+## wall (pre-existing behavior from an earlier tuning session, unrelated
+## to this movement feel overhaul), and can_wall_jump outranks can_double_
+## jump in _apply_jump's priority - pressing jump again too soon fires
+## ANOTHER (weaker, toward-tier) wall jump instead of the double jump this
+## invariant is actually about. Confirmed via the double-jump charge
+## itself: it should still read available right up until the real fire.
+func _test_away_wall_jump_cannot_regrab_wall_quickly() -> String:
+	var config := _default_config()
+	var wall_col := 0
+	var solid_tiles: Dictionary = {}
+	for row in range(-20, 60):
+		solid_tiles[Vector2i(wall_col, row)] = true
+	var state := MovementState.new()
+	state.double_jump_available = true
+	state.position = Vector2(30, 100)
+
+	var approach: Array[Dictionary] = InputPlayback.hold({"move_left": true}, 40)
+	var setup_history := InputPlayback.run(state, config, approach, PlayerMovement.process, solid_tiles)
+	var attached := false
+	for s in setup_history:
+		if s.on_wall_left:
+			attached = true
+			break
+	var setup_failure := Expect.is_true(attached, "test setup problem: player never made real contact with the wall")
+	if setup_failure != "":
+		return setup_failure
+
+	var fire_frames: Array[Dictionary] = [{"jump_pressed": true, "move_right": true}]
+	var wait_frames := InputPlayback.hold({"jump_pressed": false, "move_right": true}, config.wall_detach_grace + config.wall_coyote_time + 2)
+	var return_frames: Array[Dictionary] = [{"jump_pressed": true, "move_left": true, "move_right": false}]
+	for i in range(38):
+		return_frames.append({"jump_pressed": false, "move_left": true, "move_right": false})
+
+	var frames: Array[Dictionary] = []
+	frames.append_array(fire_frames)
+	frames.append_array(wait_frames)
+	frames.append_array(return_frames)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	var double_jump_fire_index := fire_frames.size() + wait_frames.size()
+	var fire_setup_failure := Expect.is_false(history[double_jump_fire_index].double_jump_available, "test setup problem: the second jump press should have consumed the double jump charge, proving it fired a real double jump and not another wall jump")
+	if fire_setup_failure != "":
+		return fire_setup_failure
+
+	var min_frames := 20
+	for i in range(double_jump_fire_index, mini(double_jump_fire_index + min_frames, history.size())):
+		var failure := Expect.is_false(history[i].on_wall_left, "player should not regrab the same wall within %d frames of the double jump, even holding full opposite input straight back at it, but touched it again at frame %d" % [min_frames, i])
+		if failure != "":
+			return failure
+	return ""
+
+## Required invariant: no single-frame velocity discontinuity during any
+## direction change except rule 1's intentional ground snap. Runs
+## alternating direction flips on the ground and in the air and checks
+## every frame-to-frame vx change stays within one frame's worth of the
+## relevant accel/friction rate - EXCEPT the exact frame a grounded
+## opposing flip happens, which rule 1 allows to jump by up to a full
+## target_speed-sized step (that's the point of rule 1, not a bug).
+##
+## Classifies "was this frame's decision grounded" from the sequence this
+## test itself constructed (a parallel `grounded` array), not by reading
+## state.on_floor back out of the returned history - on_floor here is
+## injected (no real solid_tiles), so _resolve_collision overwrites it to
+## false by the time a frame's snapshot is taken, even on frames where the
+## injected value was true for decision-making purposes. Same "stale vs.
+## fresh collision flags" distinction documented in HANDOFF.md elsewhere
+## in this project.
+func _test_no_velocity_discontinuity_except_rule_1() -> String:
+	var config := _default_config()
+	var state := MovementState.new()
+
+	var frames: Array[Dictionary] = []
+	frames.append_array(InputPlayback.hold({"on_floor": true, "move_right": true}, 20))
+	frames.append_array(InputPlayback.hold({"on_floor": true, "move_left": true, "move_right": false}, 20))
+	frames.append_array(InputPlayback.hold({"on_floor": true, "move_right": true, "move_left": false}, 20))
+	frames.append_array(InputPlayback.hold({"on_floor": false, "move_right": true, "move_left": false}, 20))
+	frames.append_array(InputPlayback.hold({"on_floor": false, "move_left": true, "move_right": false}, 20))
+
+	var grounded: Array[bool] = []
+	for i in range(60):
+		grounded.append(true)
+	for i in range(40):
+		grounded.append(false)
+
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+
+	var max_ground_air_delta: float = maxf(maxf(config.ground_acceleration, config.ground_friction), maxf(config.air_acceleration, config.air_friction)) + 0.02
+
+	for i in range(1, history.size()):
+		var delta := absf(history[i].velocity.x - history[i - 1].velocity.x)
+		if delta <= max_ground_air_delta:
+			continue
+		var is_grounded_flip: bool = grounded[i - 1] and sign(history[i - 1].velocity.x) != 0.0 and sign(history[i - 1].velocity.x) != sign(history[i].velocity.x)
+		var failure := Expect.is_true(is_grounded_flip, "vx jumped by %s at frame %d (%s -> %s), more than a normal accel/friction step allows, but this wasn't a grounded direction-opposing flip - rule 1 is the only thing allowed to produce a jump this large" % [delta, i, history[i - 1].velocity.x, history[i].velocity.x])
+		if failure != "":
+			return failure
+	return ""
