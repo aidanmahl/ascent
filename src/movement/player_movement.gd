@@ -48,11 +48,12 @@ static func _reset(state: MovementState, spawn_position: Vector2) -> void:
 	state.wall_attached = false
 	state.timers.clear()
 
-## wall_detach tracks frames since _is_pressing_into_wall was last true (0
-## = pressing into it right now) - computed here, before _apply_jump and
-## _apply_run, rather than inline inside _apply_gravity as before, so
-## _apply_run can also see this frame's value instead of the previous
-## frame's stale one (needed for the detach-grace horizontal lock).
+## wall_detach tracks frames since _touched_wall_with_momentum was last
+## true (0 = a real wall collision happened this frame) - computed here,
+## before _apply_jump and _apply_run, rather than inline inside
+## _apply_gravity as before, so _apply_run can also see this frame's value
+## instead of the previous frame's stale one (needed for the detach-grace
+## horizontal lock).
 ##
 ## state.wall_attached is the single source of truth for "currently
 ## treated as attached to a wall" (cling/wall-slide gravity, wall jump
@@ -85,12 +86,28 @@ static func _reset(state: MovementState, spawn_position: Vector2) -> void:
 ## governed active away-pressing now also governs "no longer near any
 ## wall" - both expire within wall_detach_grace frames, a brief window
 ## after leaving, not forever.
+##
+## Milestone 4 tuning iteration 7: attachment now initiates from
+## _touched_wall_with_momentum (a real collision this frame, per
+## on_wall_left/right) instead of requiring the matching directional input
+## to be held at the same time - running into a wall with momentum (from a
+## dash, a running jump where the key got released mid-air, etc.) now
+## sticks even if the key isn't actively held at the moment of impact.
+## This is a strict relaxation, not a separate path: a real collision
+## already implies nonzero velocity.x into that side (that's the only way
+## TileCollision ever sets the flag), so held-input contact - the old
+## condition - was always a subset of this. It also can't be triggered by
+## a motionless touch (a vertical-only jump landing you at rest against a
+## wall never runs the collision check at all, per the same nonzero-
+## velocity requirement), so cling still won't initiate until real
+## horizontal momentum is actually introduced, by a press or otherwise -
+## exactly the boundary the request asked to keep intact.
 static func _update_wall_attachment(state: MovementState, config: MovementConfig, solid_tiles: Dictionary) -> void:
-	var pressing_into := _is_pressing_into_wall(state)
+	var touched_with_momentum := _touched_wall_with_momentum(state)
 	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
 	var wall_side := _current_wall_side(state)
 	var still_touching := TileCollision.is_touching_wall(state.position, config.collider_size, solid_tiles, config.tile_size, config.collision_width_margin_px, wall_side)
-	if pressing_into:
+	if touched_with_momentum:
 		wall_detach = 0
 	elif _is_pressing_away_from_wall(state) or not still_touching:
 		wall_detach += 1
@@ -360,8 +377,23 @@ static func _apply_gravity(state: MovementState, config: MovementConfig) -> void
 	var fall_cap := config.wall_slide_max_fall_speed if attached else config.max_fall_speed
 	state.velocity.y = minf(state.velocity.y + g, fall_cap)
 
-static func _is_pressing_into_wall(state: MovementState) -> bool:
-	return (state.on_wall_left and state.move_left) or (state.on_wall_right and state.move_right)
+## True on any frame with a real wall collision (on_wall_left/right),
+## regardless of whether the matching directional input is currently held.
+## `on_wall_left`/`on_wall_right` can only become true when TileCollision
+## actually detected a collision while resolving a NONZERO velocity.x move
+## into that side (see TileCollision.resolve/_resolve_x) - so this is true
+## exactly when the player ran into the wall with real momentum in that
+## direction, whether that momentum came from held input, a dash, residual
+## air-friction decay, or anything else. Held input is no longer required
+## (milestone 4 tuning iteration 7, per request: cling should initiate
+## from momentum alone, not just an actively-held key) - and this can never
+## be true from a motionless touch (zero velocity.x never triggers a
+## collision check at all), so a player parked at rest against a wall from
+## a pure vertical jump still won't attach until real horizontal momentum
+## (from an actual movement press) is introduced - exactly the boundary the
+## request also asked to preserve.
+static func _touched_wall_with_momentum(state: MovementState) -> bool:
+	return state.on_wall_left or state.on_wall_right
 
 ## Returns true if a dash controlled this frame's velocity (start,
 ## continuing, or the frame it ends on), so process() knows to skip

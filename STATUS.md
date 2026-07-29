@@ -137,11 +137,39 @@ summary.
 
 `tools/validate.cmd`: 41/41 green.
 
+- **Iteration 7 — feel pass after the Group A/B playtest confirmed fixed**:
+  - Gravity −10% again (0.405 → 0.365, on top of iteration 1's −10%).
+  - `wall_slide_max_fall_speed` −33% (1.5 → 1.0), beyond the general
+    gravity reduction, per explicit request ("sliding down walls too
+    quickly, beyond the default gravity decrease").
+  - `wall_detach_grace` +60% (14 → 22).
+  - **Wall cling now initiates from real momentum into a wall, not just a
+    held directional key at the moment of impact.** `on_wall_left`/
+    `on_wall_right` can only become true on a frame where TileCollision
+    detected a collision while resolving a *nonzero* velocity.x move — so
+    a real collision already implies real momentum in that direction,
+    independent of whether the matching key is currently held. Running
+    into a wall off a dash, or off a running jump where the key got
+    released before impact, now sticks. Renamed the gating check from
+    `_is_pressing_into_wall` to `_touched_wall_with_momentum` to match.
+    Explicitly verified this does NOT let a motionless touch (e.g.
+    landing at rest against a wall from a purely vertical jump) initiate
+    a cling — TileCollision never runs the collision check on a
+    zero-velocity axis move in the first place, so there's structurally
+    no way to trigger attachment without real horizontal momentum having
+    been introduced by *something* (a press or otherwise). Two new
+    regression tests cover both directions of this. All prior wall-related
+    tests (the Group A/B suite included) re-verified green with no changes
+    needed — the momentum condition is a strict relaxation of the old
+    held-input condition (every case the old check accepted, the new one
+    still accepts), not a separate path.
+
+`tools/validate.cmd`: 43/43 green.
+
 ## Next
 - **Milestone 4 gate is still open.** Do not proceed to milestone 5
-  without approval. Iteration 6 above should get a real playtest before
-  the gate is considered for closing — this was a from-the-code fix, not
-  yet confirmed against a human with a keyboard.
+  without approval. Iteration 7's changes above are fresh — get them
+  played before the next round.
 
 ## Surprised by / flagging
 - **Dash locks out jump and run, not just gravity.** SPEC.md section 4

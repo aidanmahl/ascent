@@ -64,6 +64,8 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("wall_jump_neutral_state_ends_after_leaving_wall", _test_wall_jump_neutral_state_ends_after_leaving_wall)
 	runner.register("wall_state_ends_when_walking_off_bottom_of_wall", _test_wall_state_ends_when_walking_off_bottom_of_wall)
 	runner.register("wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity", _test_wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity)
+	runner.register("wall_cling_initiates_from_momentum_without_held_input", _test_wall_cling_initiates_from_momentum_without_held_input)
+	runner.register("wall_cling_does_not_initiate_from_motionless_touch", _test_wall_cling_does_not_initiate_from_motionless_touch)
 
 func _default_config() -> MovementConfig:
 	return load("res://src/movement/default_movement_config.tres")
@@ -1167,3 +1169,74 @@ func _test_wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity()
 		if failure != "":
 			return failure
 	return ""
+
+## Milestone 4 tuning iteration 7: wall cling should initiate from real
+## momentum into a wall, not just an actively-held directional key at the
+## moment of impact. Seeds pure leftward velocity (no move_left/move_right
+## held at all, the whole test) and lets it carry the player into a real
+## wall - proves the collision this produces (on_wall_left, from residual
+## momentum alone) is enough to attach, matching _touched_wall_with_
+## momentum's premise that on_wall_left/right already implies momentum
+## regardless of what's held.
+func _test_wall_cling_initiates_from_momentum_without_held_input() -> String:
+	var config := _default_config()
+	var wall_col := 0
+	var solid_tiles: Dictionary = {}
+	for row in range(-10, 40):
+		solid_tiles[Vector2i(wall_col, row)] = true
+	var state := MovementState.new()
+	state.position = Vector2(30, 8)
+	state.velocity = Vector2(-2.0, 0.0)
+
+	var frames := InputPlayback.hold({}, 40)
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	var attached_at := -1
+	for i in range(history.size()):
+		if history[i].on_wall_left:
+			attached_at = i
+			break
+	var setup_failure := Expect.is_true(attached_at >= 0, "test setup problem: residual momentum should have carried the player into the wall for a real collision, with no move_left/move_right ever held")
+	if setup_failure != "":
+		return setup_failure
+
+	return Expect.is_true(history[-1].velocity.y <= config.wall_slide_max_fall_speed + 0.001, "cling should initiate from momentum alone (no directional key held at the moment of impact) and persist under the continued neutral input")
+
+## Milestone 4 tuning iteration 7, the boundary the request explicitly
+## asked to preserve: a motionless touch (e.g. a vertical-only jump right
+## next to a wall, zero horizontal velocity the whole time) must NOT
+## initiate cling, since TileCollision never even runs the collision check
+## on a zero-velocity axis move - there is no "momentum" to speak of. Only
+## once a real movement press introduces actual horizontal velocity should
+## a genuine collision (and therefore attachment) become possible.
+func _test_wall_cling_does_not_initiate_from_motionless_touch() -> String:
+	var config := _default_config()
+	var wall_col := 0
+	var solid_tiles: Dictionary = {}
+	for row in range(-10, 40):
+		solid_tiles[Vector2i(wall_col, row)] = true
+	var state := MovementState.new()
+	state.position = Vector2(19, 8)
+	state.velocity = Vector2(0.0, 0.0)
+
+	var frames: Array[Dictionary] = [{"jump_pressed": true}]
+	for i in range(30):
+		frames.append({"jump_pressed": false})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	for i in range(history.size()):
+		var failure := Expect.is_false(history[i].on_wall_left, "a vertical-only jump with zero horizontal momentum should never register a real wall collision at frame %d" % i)
+		if failure != "":
+			return failure
+	var no_cling_failure := Expect.is_true(history[-1].velocity.y > config.wall_slide_max_fall_speed + 0.001, "with no horizontal momentum ever introduced, the player should never cling - vy should exceed the wall-slide cap once falling")
+	if no_cling_failure != "":
+		return no_cling_failure
+
+	var press_frames := InputPlayback.hold({"move_left": true}, 20)
+	var press_history := InputPlayback.run(state, config, press_frames, PlayerMovement.process, solid_tiles)
+	var attached := false
+	for s in press_history:
+		if s.on_wall_left:
+			attached = true
+			break
+	return Expect.is_true(attached, "pressing toward the wall should introduce real momentum and finally trigger a genuine collision/attachment - proves the earlier absence of cling was a genuine never-attached state, not a fluke")

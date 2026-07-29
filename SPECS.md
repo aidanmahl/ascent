@@ -71,7 +71,7 @@ them as the initial state of a knob, not as a requirement.
 ### Gravity & jump
 | Param | Value |
 |---|---|
-| Gravity | 0.405 px/frame² (reduced 10% from 0.45 in milestone 4 tuning) |
+| Gravity | 0.365 px/frame² (reduced 10% from 0.45, then a further ~10% to 0.365, both in milestone 4 tuning) |
 | Max fall speed | 5.5 px/frame |
 | Jump velocity | -6.5 px/frame |
 | Double jump velocity | -5.8 px/frame |
@@ -91,11 +91,11 @@ too). Replaced by `collision_width_margin_px` under Collider, below.
 ### Wall
 | Param | Value |
 |---|---|
-| Wall slide max fall speed | 1.5 px/frame |
-| Wall cling | 13 frames of zero gravity on first touch while holding toward wall |
+| Wall slide max fall speed | 1.0 px/frame (reduced from 1.5, beyond the general gravity reduction, in milestone 4 tuning) |
+| Wall cling | 13 frames of zero gravity on first touch with real momentum into the wall |
 | Wall jump velocity | (±4.0, -6.0) |
 | Wall jump input lockout | 8 frames of no horizontal input authority |
-| Wall detach grace | 14 frames of actively holding away before cling actually releases (increased 75% from 8 in milestone 4 tuning) |
+| Wall detach grace | 22 frames of actively holding away (or genuinely not touching) before cling actually releases (8 -> +75% -> 14, then +60% -> 22, across two milestone 4 tuning sessions) |
 | Wall coyote time | 6 frames after losing wall contact during which a wall jump still fires |
 | Wall cling entry speed cap | 4.0 px/frame max magnitude of velocity.y carried into a cling while falling or at rest |
 
@@ -135,10 +135,25 @@ falling. Without this, the budget reset fresh at the exact instant rising
 stopped, freezing at whatever near-zero velocity was there right at the apex
 for the whole window — a jarring pause. Grabbing a wall already at or near
 rest still gets a hold for whatever budget remains, same as before. Since
-`wall_detach_grace` (14) is now longer than `wall_cling_frames` (13), the
+`wall_detach_grace` (22) is now longer than `wall_cling_frames` (13), the
 cling (zero-gravity) portion can run out before grace itself does — from
 that point the player is still attached (wall-slide-capped falling, wall jump
 still available) for the remainder of grace, just no longer frozen.
+
+**Cling initiates from real momentum into the wall, not just a held
+directional key at the moment of impact** (milestone 4 tuning iteration 7).
+`on_wall_left`/`on_wall_right` can only become true on a frame where an
+actual collision was detected while resolving a *nonzero* velocity.x move
+into that side — so a real collision already implies real momentum in that
+direction, regardless of whether the matching key happens to be held at that
+exact instant. Running into a wall mid-air off a dash, or off a running jump
+where the direction key got released before impact, now sticks. The reverse
+also holds and was an explicit requirement: a motionless touch — e.g.
+landing at rest against a wall via a purely vertical jump, zero horizontal
+velocity throughout — never runs the collision check at all (it only runs
+on a nonzero-velocity axis move), so it can never initiate a cling by
+itself. Attachment only becomes possible once real horizontal momentum is
+actually introduced, whether by a press or otherwise.
 
 During `wall_detach_grace`, horizontal input has no authority — a commitment
 window, not a slow release. Velocity.x decays toward 0 via friction during

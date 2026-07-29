@@ -8,15 +8,16 @@ and reality ever disagree.
 ## Where things are right now
 
 Still at the **milestone 4 tuning gate** (SPECS.md section 11 - hard stop,
-no milestone 5 work without explicit approval). Previous session was
-tuning iterations 1-5 plus web export infra; this session (iteration 6)
-fixed the Group A/B regression those iterations left behind (see "Group
-A/B regression fix" below - the old "Known regression already written up"
-section from last session's handoff is resolved and removed).
+no milestone 5 work without explicit approval). Iteration 6 (Group A/B
+regression fix) got played and confirmed fixed - user came back same
+session with iteration 7: a normal feel-tuning pass (gravity, wall-slide
+speed, detach grace) plus one real mechanism change (momentum-based cling
+initiation, see "Momentum-based cling initiation" below). Both iterations
+6 and 7 happened in the same session as each other, so there's only one
+chronological log below covering both.
 
-This was a from-the-code fix, not yet confirmed against a human with a
-keyboard - **the gate should not be considered for closing until it gets
-a real playtest.**
+Iteration 7's changes have NOT been played yet - same standing rule as
+always, don't treat a from-the-code fix as done until a human confirms it.
 
 Check `git log`/`STATUS.md` for what's actually committed/pushed as of
 whenever you're reading this.
@@ -126,6 +127,22 @@ whenever you're reading this.
    detach-grace hard pin, added the wall-cling indicator). Full detail in
    "Group A/B regression fix" below - this item is just the log entry.
 
+8. **Tuning iteration 7, same session**: user played iteration 6,
+   confirmed "That fixed the bug," then gave five feel/mechanism asks in
+   one message -
+   - Gravity -10% again (0.405 -> 0.365).
+   - `wall_slide_max_fall_speed` -33% (1.5 -> 1.0), explicitly "beyond the
+     default gravity decrease."
+   - Wall cling should initiate from momentum into a wall, not just a
+     held key at the moment of impact - fixed, see "Momentum-based cling
+     initiation" below.
+   - Explicit requirement to ENSURE no wall-related regressions from that
+     change, AND to ENSURE a motionless touch (vertical jump adjacent to a
+     wall) still doesn't initiate cling until real momentum is introduced.
+     Both directions covered by new tests; full existing wall suite
+     re-verified green with zero test changes needed.
+   - `wall_detach_grace` +60% (14 -> 22).
+
 ## Group A/B regression fix (this session, iteration 6)
 
 Confirmed the prior session's own diagnosis by re-reading the code fresh
@@ -221,12 +238,54 @@ No tuning values were changed. SPECS.md section 4 updated to describe the
 new mechanism (proximity-gated neutral freeze, friction-decay detach-grace
 window, the new indicator).
 
+## Momentum-based cling initiation (this session, iteration 7)
+
+Renamed `_is_pressing_into_wall` to `_touched_wall_with_momentum` and
+dropped its `move_left`/`move_right` requirement - it's now just
+`state.on_wall_left or state.on_wall_right`. The insight that made this
+safe rather than a guess: `on_wall_left`/`on_wall_right` can ONLY become
+true on a frame where `TileCollision._resolve_x` actually ran a collision
+check, which itself only happens on a nonzero-velocity axis move (see
+`_resolve_x`'s `if vel_x == 0.0: return` guard) - so a real collision
+*already* implies real momentum into that side, unconditionally, before
+this change ever mattered. The old `and move_left`/`and move_right` was
+therefore never doing the job it looked like it was doing - held-input
+contact was always a strict subset of "any collision at all," so dropping
+it is a pure relaxation (every case the old check accepted, the new one
+still does), not a new or parallel code path. That's also exactly why the
+motionless-touch boundary (request 5) falls out for free: zero velocity.x
+never reaches the collision check in the first place, so there's no
+scenario where this could fire without real horizontal momentum having
+been present *somehow* - a press, residual friction-decaying momentum
+from an earlier press, a dash, whatever.
+
+Spent real effort tracing whether this would break `_test_wall_jump_lockout`
+before touching anything, since that test's frame 0 injects `on_wall_left:
+true` simultaneously with `move_right: true` (pressing away) - a
+same-frame combination that can't arise from genuine physics (if
+`move_right` were really held that frame, `_apply_run` would have already
+pushed velocity.x positive before collision resolution ran, so a same-frame
+`on_wall_left` requires velocity.x negative that frame, contradicting
+`move_right`). Worked out that this synthetic-only combination doesn't
+actually change the test's *observable* outcome even under the new logic
+(traced through why: wall_jump_lockout dominates `_apply_run` regardless of
+`_update_wall_attachment`'s classification for the whole 8-frame lockout,
+and by the time that stops mattering the specific `wall_detach` value from
+frame 0 has already been overwritten several times over) - but treat that
+trace as informed prediction, not proof. Actually ran validate.cmd
+afterward rather than trusting the trace alone, per the standing "run
+tests, don't just reason about them" lesson from the Group B fix earlier
+this same session. All 41 pre-existing tests passed unchanged; two new ones
+added for the momentum-initiation behavior itself
+(`wall_cling_initiates_from_momentum_without_held_input`,
+`wall_cling_does_not_initiate_from_motionless_touch`), landing at 43/43.
+
 ## Wall attachment system architecture (current, as of this session)
 
-This got fairly intricate over 6 iterations. State (`MovementState.timers`
+This got fairly intricate over 7 iterations. State (`MovementState.timers`
 dict keys unless noted, all in `player_movement.gd`):
-- `wall_detach` (int): frames since `_is_pressing_into_wall` was last
-  true. 0 = pressing in right now. Defaults to `wall_detach_grace + 1`
+- `wall_detach` (int): frames since `_touched_wall_with_momentum` was last
+  true. 0 = a real collision happened this frame. Defaults to `wall_detach_grace + 1`
   (already-expired) when absent, NOT 0 - a player who's never touched a
   wall must not read as attached. Advances (not just freezes) whenever
   neither pressing into NOR genuinely still adjacent (per
@@ -293,7 +352,7 @@ ground_friction = 0.4          (untouched all session)
 air_acceleration = 0.0765      (was 0.18)
 air_friction = 0.1             (untouched)
 turnaround_multiplier = 1.8    (untouched)
-gravity = 0.405                (was 0.45, -10%)
+gravity = 0.365                (was 0.45; -10% -> 0.405, then a further -10% -> 0.365)
 max_fall_speed = 5.5           (untouched - user explicitly said leave it)
 jump_velocity = -6.5           (untouched)
 jump_cut_multiplier = 0.45
@@ -307,13 +366,13 @@ dash_speed = 7.0
 dash_cooldown_frames = 6
 dash_exit_horizontal_retention = 0.6
 dash_exit_retention_vertical = 0.6      (new - was 0% i.e. hard zero)
-wall_slide_max_fall_speed = 1.5
+wall_slide_max_fall_speed = 1.0 (was 1.5, -33%, beyond the general gravity decrease)
 wall_cling_frames = 13          (was 12, +10%)
 wall_cling_entry_speed_cap = 4.0        (new, now only matters for fast downward catches)
 wall_jump_velocity = (4.0, -6.0)
 wall_jump_neutral_velocity = (3.0, -6.5)
 wall_jump_lockout_frames = 8
-wall_detach_grace = 14          (new concept iter1 at 8, then +75% -> 14)
+wall_detach_grace = 22          (new concept iter1 at 8, then +75% -> 14, then +60% -> 22)
 wall_coyote_time = 6            (new, mostly redundant now, see above)
 collider_size = (10, 16)        (visual/nominal, unchanged)
 tile_size = 16
@@ -325,8 +384,9 @@ deprecated/unused.
 
 ## Test suite
 
-41 tests, all green as of this session (was 37 last session, +4 new, 1
-rewritten - see "Group A/B regression fix" above). Two tests from last
+43 tests, all green as of this session (was 37 last session, +4 for the
+Group A/B fix +2 for momentum-initiation, 1 rewritten - see "Group A/B
+regression fix" and "Momentum-based cling initiation" above). Two tests from last
 session had to be rewritten because they were accidentally exercising
 neutral input where they meant to test the away-holding countdown
 (`_run_wall_coyote_scenario`, `_test_wall_detach_grace_keeps_cling_attached`)
@@ -400,5 +460,7 @@ against, since `_update_wall_attachment` now checks real proximity via
   whatever the user last wrote there) once this session's fix is
   committed - re-check it's actually current before trusting it, same
   standing caveat as always.
-- **This session's fix has not been played by a human yet.** That's the
-  next real gate before milestone 5, not just "did validate.cmd pass."
+- **Iteration 6 (Group A/B) got played and confirmed fixed this same
+  session. Iteration 7 (feel pass + momentum initiation) has NOT been
+  played yet.** That's the next real gate before milestone 5, not just
+  "did validate.cmd pass."
