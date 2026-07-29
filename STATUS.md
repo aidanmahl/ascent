@@ -67,9 +67,59 @@
   `MovementState`, and the capture tool silently "succeeded" through it).
 - `tools/validate.cmd` passes, 24/24 tests green.
 
+## Milestone 4 — human tuning pass (in progress, gate still open)
+
+Five tuning iterations so far, all against the movement core and the new
+`scenes/main.gd` "movement gym" test level (not the real sample level —
+that's milestone 10). Full technical detail, exact values, and the wall-
+attachment architecture that emerged are in `HANDOFF.md`; this is the
+summary.
+
+- **Iteration 1**: fixed wall cling preserving upward velocity through the
+  cling window (caused "jump into a wall = launch far above normal
+  height" — confirmed the jump-buffer theory in the original bug report
+  was wrong before fixing anything). Added `wall_detach_grace` /
+  `wall_coyote_time` so wall jump isn't frame-perfect on entry or exit.
+  Gravity −10%. Built the movement gym level.
+- **Fixed again, properly**: the cling fix above only bounded the
+  superjump rather than eliminating it. User pushed back asking why
+  "preserving" velocity could ever increase height — root cause was
+  freezing a still-decelerating velocity for a fixed zero-gravity window,
+  which suspends deceleration a normal jump would've had. Real fix: while
+  attached and still rising, gravity behaves identically to being off the
+  wall; cling only catches you once you actually stop ascending.
+- **Iteration 3**: removed the nudge-based corner correction entirely (it
+  never helped jump-corner forgiveness and separately caused an early-
+  ledge-drop bug). Replaced with a narrower collision hitbox
+  (`collision_width_margin_px`, horizontal only). Run speed/accel −15%.
+  Checkerboard visuals for a speed reference.
+- **Iteration 4**: acceleration halved again. `wall_detach_grace` +75%.
+  Found and fixed two more bugs this surfaced: wall jump during late
+  grace silently consuming a double jump instead, and a jarring pause at
+  the top of a wall-hugging jump (cling budget was resetting fresh at the
+  exact rising-to-falling transition instead of counting continuously
+  from first contact).
+- **Iteration 5**: softened the wall-jump-lockout boundary (friction now
+  decays imparted velocity during the lockout hold instead of a hard
+  freeze). Distinguished neutral from away in wall-detach tracking so
+  cling can persist indefinitely under neutral input, not just active
+  into-pressing.
+
+`tools/validate.cmd`: 37/37 green as of `11d270f`.
+
+**Known issue going into the next session, not yet fixed**: iteration 5's
+neutral-input fix appears to have an unintended consequence — wall-slide
+descent rate and wall-jump eligibility can persist indefinitely after
+actually leaving a wall (not just while still standing neutral beside it),
+since nothing in the attachment tracking checks real proximity, only input
+state. The user has a detailed bug report already drafted (currently
+sitting uncommitted in `PROMPT.md`) with repro steps and test
+requirements. See `HANDOFF.md`'s "Known regression" section for the full
+diagnosis before starting that fix.
+
 ## Next
-- **Milestone 4 is a hard stop: human tuning pass.** Do not proceed
-  without approval — this applies now.
+- **Milestone 4 gate is still open.** Do not proceed to milestone 5
+  without approval. Next session starts with the regression above.
 
 ## Surprised by / flagging
 - **Dash locks out jump and run, not just gravity.** SPEC.md section 4
