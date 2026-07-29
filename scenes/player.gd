@@ -22,6 +22,15 @@ var kill_plane_y: float = INF
 @onready var _dash_indicator: ColorRect = $DashIndicator
 @onready var _wall_cling_indicator: ColorRect = $WallClingIndicator
 
+## WallClingIndicator's offsets as authored in player.tscn (the left-edge
+## strip) and their mirror image against the sprite's own offsets
+## (offset_left -5.0 / offset_right 5.0) - swapped onto the right edge
+## when the wall being clung to is on the player's right, so the
+## indicator always shows which side the wall is actually on instead of
+## always defaulting to the left.
+const _WALL_CLING_OFFSET_LEFT := Vector2(-5.0, -3.0)
+const _WALL_CLING_OFFSET_RIGHT := Vector2(3.0, 5.0)
+
 func _physics_process(_delta: float) -> void:
 	state.move_left = Input.is_action_pressed("move_left")
 	state.move_right = Input.is_action_pressed("move_right")
@@ -45,3 +54,7 @@ func _physics_process(_delta: float) -> void:
 	_double_jump_indicator.visible = state.double_jump_available
 	_dash_indicator.visible = state.dash_available
 	_wall_cling_indicator.visible = state.wall_attached
+	if state.wall_attached:
+		var side_offsets := _WALL_CLING_OFFSET_RIGHT if state.last_wall_side > 0.0 else _WALL_CLING_OFFSET_LEFT
+		_wall_cling_indicator.offset_left = side_offsets.x
+		_wall_cling_indicator.offset_right = side_offsets.y

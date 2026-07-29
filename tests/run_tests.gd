@@ -66,6 +66,7 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity", _test_wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity)
 	runner.register("wall_cling_initiates_from_momentum_without_held_input", _test_wall_cling_initiates_from_momentum_without_held_input)
 	runner.register("wall_cling_does_not_initiate_from_motionless_touch", _test_wall_cling_does_not_initiate_from_motionless_touch)
+	runner.register("neutral_jump_from_ground_against_wall_does_not_cling", _test_neutral_jump_from_ground_against_wall_does_not_cling)
 
 func _default_config() -> MovementConfig:
 	return load("res://src/movement/default_movement_config.tres")
@@ -1240,3 +1241,58 @@ func _test_wall_cling_does_not_initiate_from_motionless_touch() -> String:
 			attached = true
 			break
 	return Expect.is_true(attached, "pressing toward the wall should introduce real momentum and finally trigger a genuine collision/attachment - proves the earlier absence of cling was a genuine never-attached state, not a fluke")
+
+## Bug report: running up to a wall along the ground, then a neutral jump
+## (release input, press jump with no horizontal momentum) incorrectly
+## clings. Root cause: _touched_wall_with_momentum didn't check on_floor,
+## so grinding against a wall while grounded (the "perpetual bump"
+## mechanic - real, repeated on_wall_left contact every frame input is
+## held into it) kept resetting wall_detach to 0 the whole time, even
+## though wall_attached itself was correctly suppressed by on_floor. The
+## instant the player left the ground (a jump, any jump, even a plain
+## vertical one with zero horizontal input), wall_attached read that
+## already-zero wall_detach as a fresh, genuine airborne attach - and the
+## position-based proximity probe kept it frozen there under neutral
+## input, since horizontally the player hadn't moved away at all. Fixed by
+## requiring not on_floor for _touched_wall_with_momentum itself, so only
+## genuinely airborne contact can ever arm wall_detach.
+func _test_neutral_jump_from_ground_against_wall_does_not_cling() -> String:
+	var config := _default_config()
+	var wall_col := 0
+	var floor_row := 10
+	var solid_tiles: Dictionary = {}
+	for row in range(-10, floor_row):
+		solid_tiles[Vector2i(wall_col, row)] = true
+	for col in range(-5, 41):
+		solid_tiles[Vector2i(col, floor_row)] = true
+	var state := MovementState.new()
+	state.position = Vector2(150, float(floor_row * config.tile_size) - 8.0)
+
+	var approach := InputPlayback.hold({"move_left": true}, 90)
+	var setup_history := InputPlayback.run(state, config, approach, PlayerMovement.process, solid_tiles)
+	var grounded_contact := false
+	for s in setup_history:
+		if s.on_floor and s.on_wall_left:
+			grounded_contact = true
+			break
+	var setup_failure := Expect.is_true(grounded_contact, "test setup problem: player never made grounded contact with the wall while running into it")
+	if setup_failure != "":
+		return setup_failure
+
+	var frames: Array[Dictionary] = [{"move_left": false, "jump_pressed": true}]
+	for i in range(40):
+		frames.append({"jump_pressed": false})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
+
+	# The jump is a plain vertical hop with no horizontal escape, so the
+	# player lands back on the same floor spot well within the window -
+	# check the peak fall speed reached anywhere in the sequence (while
+	# still airborne), not the final frame, which is back on the ground
+	# (vy pinned to 0 there for an unrelated reason - floor contact, not
+	# wall cling) and would trivially satisfy or fail the assertion for
+	# the wrong reason either way.
+	var peak_vy := -INF
+	for s in history:
+		if not s.on_floor:
+			peak_vy = maxf(peak_vy, s.velocity.y)
+	return Expect.is_true(peak_vy > config.wall_slide_max_fall_speed + 0.001, "a neutral jump performed right next to a wall (after running into it along the ground) should not cling - peak vy while airborne (%s) should exceed the wall-slide cap, proving normal gravity was in effect" % peak_vy)

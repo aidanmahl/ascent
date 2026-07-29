@@ -12,12 +12,18 @@ no milestone 5 work without explicit approval). Iteration 6 (Group A/B
 regression fix) got played and confirmed fixed - user came back same
 session with iteration 7: a normal feel-tuning pass (gravity, wall-slide
 speed, detach grace) plus one real mechanism change (momentum-based cling
-initiation, see "Momentum-based cling initiation" below). Both iterations
-6 and 7 happened in the same session as each other, so there's only one
-chronological log below covering both.
+initiation). Iteration 7's changes had NOT been played before iteration 8
+came in - the user found a real bug in the momentum change (see "Grounded
+wall contact must not arm momentum" below) plus asked for the indicator
+to track wall side, same session, without ever confirming iteration 7's
+feel changes (gravity/wall-slide/grace) played fine on their own. All of
+iterations 6-8 happened in this one session, so there's only one
+chronological log below covering all three.
 
-Iteration 7's changes have NOT been played yet - same standing rule as
-always, don't treat a from-the-code fix as done until a human confirms it.
+**None of iteration 7's feel changes (gravity, wall-slide speed, detach
+grace) have been confirmed played yet** - only the momentum-initiation
+mechanism got direct feedback (the neutral-jump bug report), not the
+tuning values from the same iteration. Don't assume those are dialed in.
 
 Check `git log`/`STATUS.md` for what's actually committed/pushed as of
 whenever you're reading this.
@@ -142,6 +148,15 @@ whenever you're reading this.
      Both directions covered by new tests; full existing wall suite
      re-verified green with zero test changes needed.
    - `wall_detach_grace` +60% (14 -> 22).
+
+9. **Tuning iteration 8, same session, follow-up on iteration 7's
+   momentum change**: "run up to a wall and neutral jump, I wall cling" -
+   real bug (user's own "might be something to do with the sprite
+   overlapping" guess was wrong, but a good enough lead to go looking).
+   Fixed, see "Grounded wall contact must not arm momentum" below. Also:
+   "the wall cling indicator on the player should be on the side of the
+   wall, not always the left" - fixed in `player.gd`/no movement-core
+   change, see that same section.
 
 ## Group A/B regression fix (this session, iteration 6)
 
@@ -280,6 +295,65 @@ added for the momentum-initiation behavior itself
 (`wall_cling_initiates_from_momentum_without_held_input`,
 `wall_cling_does_not_initiate_from_motionless_touch`), landing at 43/43.
 
+## Grounded wall contact must not arm momentum (this session, iteration 8)
+
+Follow-up bug report on iteration 7's own change: "run up to a wall and
+neutral jump, I wall cling." The user guessed sprite-visual overlap as the
+cause; that guess was wrong, but the report itself was accurate and led
+straight to the real mechanism once traced.
+
+**Diagnosis, done properly this time (write a failing test FIRST, per
+CLAUDE.md, before touching the fix)**: `_touched_wall_with_momentum`
+(iteration 7's change) reads `state.on_wall_left`/`on_wall_right` with no
+`on_floor` check at all. Running into a wall while grounded and holding a
+direction key produces real, repeated collisions every single frame - the
+"perpetual bump" mechanic documented since milestone 2 (input
+re-accelerates velocity.x into the wall, collision zeroes it, next frame
+repeats). Each of those grounded collisions was resetting `wall_detach` to
+0, over and over, for as long as the player stood there holding the key -
+even though `wall_attached` itself correctly stayed `false` the whole time
+(it separately requires `not on_floor`). The bug: the INSTANT the player
+left the ground - by firing ANY jump, including a plain vertical one with
+zero horizontal input ("neutral jump") - `wall_attached` read that
+already-sitting-at-0 `wall_detach` as a brand new, genuine airborne attach.
+`_update_wall_attachment`'s neutral-freeze (position-proximity-gated,
+correctly, per last session's Group A/B fix) then held it there, because
+horizontally the player hadn't moved away from the wall at all - they'd
+just gone straight up. So the neutral-freeze mechanism was working exactly
+as designed; the actual defect was one level upstream, in what was allowed
+to arm `wall_detach` to 0 in the first place.
+
+Wrote `_test_neutral_jump_from_ground_against_wall_does_not_cling` first,
+confirmed it failed against the pre-fix code (twice, actually - the first
+version of the test had its OWN bug, a geometry setup mistake that made the
+setup assertion fail before ever reaching the real check; fixed that, then
+got a genuine failure against the real bug). Fix: added `not
+state.on_floor` directly into `_touched_wall_with_momentum` - only
+genuinely airborne contact can arm attachment now, full stop. Verified
+the fix didn't just paper over the assertion by dumping per-frame debug
+output (`on_floor`/`on_wall_left`/`vy`/`wall_detach`/`wall_attached`) and
+confirming `wall_attached` stayed `false` for the ENTIRE post-jump
+sequence, all the way through a full jump arc and landing back on the
+floor - not just "the last frame happens to look fine." (The test's FIRST
+attempted fix-verification also had a bug of its own: it checked `vy` at
+the very last frame of a 40-frame window, but the jump is a plain vertical
+hop with no horizontal escape, so the player lands back on the same spot
+around frame 37 - by frame 40 `vy` is pinned at 0 from FLOOR contact, not
+wall cling, which would have made the assertion misleading in both
+directions. Fixed to check peak `vy` reached anywhere while still
+airborne instead.) Debug prints removed before committing. 44/44 green.
+
+Also fixed in the same request, unrelated to the movement core: the
+wall-cling indicator (`scenes/player.gd`) now repositions itself onto
+whichever edge (left/right) matches `state.last_wall_side` instead of
+always rendering on the left - `last_wall_side` was already tracked in
+`MovementState` for wall-jump-direction purposes, so this is pure
+`player.gd`/`player.tscn` work, no `MovementState`/`PlayerMovement`
+changes needed. Verified visually both sides via `tools/screenshot.cmd`
+(temporarily pointed `main.gd`'s `SPAWN_POINT` at the wall-jump shaft's
+col-82 wall, approached from the left this time for a real on_wall_right
+contact, confirmed the strip rendered on the right edge; reverted after).
+
 ## Wall attachment system architecture (current, as of this session)
 
 This got fairly intricate over 7 iterations. State (`MovementState.timers`
@@ -384,9 +458,10 @@ deprecated/unused.
 
 ## Test suite
 
-43 tests, all green as of this session (was 37 last session, +4 for the
-Group A/B fix +2 for momentum-initiation, 1 rewritten - see "Group A/B
-regression fix" and "Momentum-based cling initiation" above). Two tests from last
+44 tests, all green as of this session (was 37 last session, +4 for the
+Group A/B fix, +2 for momentum-initiation, +1 for the grounded-contact
+fix, 1 rewritten - see "Group A/B regression fix", "Momentum-based cling
+initiation", and "Grounded wall contact must not arm momentum" above). Two tests from last
 session had to be rewritten because they were accidentally exercising
 neutral input where they meant to test the away-holding countdown
 (`_run_wall_coyote_scenario`, `_test_wall_detach_grace_keeps_cling_attached`)
@@ -461,6 +536,8 @@ against, since `_update_wall_attachment` now checks real proximity via
   committed - re-check it's actually current before trusting it, same
   standing caveat as always.
 - **Iteration 6 (Group A/B) got played and confirmed fixed this same
-  session. Iteration 7 (feel pass + momentum initiation) has NOT been
-  played yet.** That's the next real gate before milestone 5, not just
-  "did validate.cmd pass."
+  session. Iteration 7's momentum-initiation MECHANISM got a bug report
+  and a follow-up fix (iteration 8) in the same session - but iteration
+  7's feel-tuning VALUES (gravity, wall-slide speed, detach grace) have
+  never been confirmed played on their own.** That's the next real gate
+  before milestone 5, not just "did validate.cmd pass."

@@ -377,23 +377,42 @@ static func _apply_gravity(state: MovementState, config: MovementConfig) -> void
 	var fall_cap := config.wall_slide_max_fall_speed if attached else config.max_fall_speed
 	state.velocity.y = minf(state.velocity.y + g, fall_cap)
 
-## True on any frame with a real wall collision (on_wall_left/right),
-## regardless of whether the matching directional input is currently held.
-## `on_wall_left`/`on_wall_right` can only become true when TileCollision
-## actually detected a collision while resolving a NONZERO velocity.x move
-## into that side (see TileCollision.resolve/_resolve_x) - so this is true
-## exactly when the player ran into the wall with real momentum in that
-## direction, whether that momentum came from held input, a dash, residual
-## air-friction decay, or anything else. Held input is no longer required
-## (milestone 4 tuning iteration 7, per request: cling should initiate
-## from momentum alone, not just an actively-held key) - and this can never
-## be true from a motionless touch (zero velocity.x never triggers a
-## collision check at all), so a player parked at rest against a wall from
-## a pure vertical jump still won't attach until real horizontal momentum
-## (from an actual movement press) is introduced - exactly the boundary the
-## request also asked to preserve.
+## True on any frame with a real, AIRBORNE wall collision (on_wall_left/
+## right), regardless of whether the matching directional input is
+## currently held. `on_wall_left`/`on_wall_right` can only become true when
+## TileCollision actually detected a collision while resolving a NONZERO
+## velocity.x move into that side (see TileCollision.resolve/_resolve_x) -
+## so this is true exactly when the player ran into the wall with real
+## momentum in that direction, whether that momentum came from held input,
+## a dash, residual air-friction decay, or anything else. Held input is no
+## longer required (milestone 4 tuning iteration 7, per request: cling
+## should initiate from momentum alone, not just an actively-held key) -
+## and this can never be true from a motionless touch (zero velocity.x
+## never triggers a collision check at all), so a player parked at rest
+## against a wall from a pure vertical jump still won't attach until real
+## horizontal momentum (from an actual movement press) is introduced -
+## exactly the boundary that request also asked to preserve.
+##
+## The `not state.on_floor` requirement was added after a follow-up bug
+## report: running up to a wall along the ground and then a neutral jump
+## (release input, jump with zero horizontal momentum) was clinging
+## anyway. Cause: grinding against a wall while grounded is real, repeated
+## on_wall_left/right contact (the "perpetual bump" mechanic - input keeps
+## re-accelerating velocity.x into the wall, collision keeps zeroing it,
+## every frame) - without this guard that kept resetting wall_detach to 0
+## the whole time, even though `wall_attached` itself correctly stayed
+## false throughout (on_floor gates it). The instant the player left the
+## ground - by ANY jump, even a plain vertical one with zero horizontal
+## input - wall_detach was already sitting at 0 from that grounded
+## bumping, so `wall_attached` read it as a fresh, genuine airborne attach.
+## The position-based proximity probe in _update_wall_attachment then froze
+## it there under the neutral post-jump input, since horizontally the
+## player hadn't moved away from the wall at all. Requiring `not on_floor`
+## here means only genuinely airborne contact can ever arm wall_detach in
+## the first place - grounded wall-bumping (with or without a subsequent
+## jump) no longer pre-arms it.
 static func _touched_wall_with_momentum(state: MovementState) -> bool:
-	return state.on_wall_left or state.on_wall_right
+	return (not state.on_floor) and (state.on_wall_left or state.on_wall_right)
 
 ## Returns true if a dash controlled this frame's velocity (start,
 ## continuing, or the frame it ends on), so process() knows to skip

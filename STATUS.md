@@ -166,10 +166,32 @@ summary.
 
 `tools/validate.cmd`: 43/43 green.
 
+- **Iteration 8 — follow-up bug report on iteration 7's momentum change,
+  same session**: "run up to a wall and neutral jump" was clinging when it
+  shouldn't. Root cause: `_touched_wall_with_momentum` didn't check
+  `on_floor` — grinding against a wall while grounded (holding a direction
+  key into it, the "perpetual bump" pattern) is real, repeated contact that
+  kept resetting `wall_detach` to 0 the whole time, even though
+  `wall_attached` itself correctly stayed suppressed by `on_floor`. The
+  instant the player left the ground via ANY jump — even a plain vertical
+  one with zero horizontal input — `wall_attached` read that already-zero
+  `wall_detach` as a fresh, genuine airborne attach, and the neutral-freeze
+  proximity check kept it frozen there since the player hadn't moved away
+  horizontally. Fixed by requiring `not on_floor` in
+  `_touched_wall_with_momentum` itself, so only genuinely airborne contact
+  can ever arm attachment. Confirmed via a failing regression test first
+  (per standing practice), then fixed, then green.
+  Also: the wall-cling indicator now renders on whichever side (left/right)
+  the attached wall actually is, instead of always the left edge — verified
+  visually on both sides via `tools/screenshot.cmd`.
+
+`tools/validate.cmd`: 44/44 green.
+
 ## Next
 - **Milestone 4 gate is still open.** Do not proceed to milestone 5
-  without approval. Iteration 7's changes above are fresh — get them
-  played before the next round.
+  without approval. Iteration 8's fix is fresh, on top of iteration 7's
+  changes which were never confirmed played before this report came in —
+  get the whole batch played together before the next round.
 
 ## Surprised by / flagging
 - **Dash locks out jump and run, not just gravity.** SPEC.md section 4

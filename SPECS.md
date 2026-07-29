@@ -155,6 +155,16 @@ on a nonzero-velocity axis move), so it can never initiate a cling by
 itself. Attachment only becomes possible once real horizontal momentum is
 actually introduced, whether by a press or otherwise.
 
+Momentum-based initiation only counts while airborne. Running into a wall
+while still on the ground (e.g. holding a direction key against it before
+jumping) does not arm attachment — running up to a wall and then jumping
+straight up with no horizontal input (a "neutral jump" performed right next
+to a wall) does not cling. Grounded wall contact is real, repeated contact
+(the perpetual-bump pattern any held-into-a-wall input produces) that would
+otherwise arm the same momentum check the instant the player left the
+ground via any jump, even one with no horizontal component at all — not
+what "momentum into the wall" is supposed to mean.
+
 During `wall_detach_grace`, horizontal input has no authority — a commitment
 window, not a slow release. Velocity.x decays toward 0 via friction during
 this window rather than being hard-zeroed (see the lockout paragraph below —
@@ -206,7 +216,8 @@ draining resource. This is Ori, not Celeste.
 
 **Wall cling has a placeholder indicator**, same as double jump and dash — a
 third strip on the player rectangle, visible whenever the movement core
-reports the player as currently wall-attached.
+reports the player as currently wall-attached. It renders on whichever edge
+(left/right) the attached wall is actually on, not a fixed side.
 
 ### Dash
 | Param | Value |
