@@ -51,9 +51,12 @@ static func _reset(state: MovementState, spawn_position: Vector2) -> void:
 ## wall_detach tracks frames since _touched_wall_with_momentum was last
 ## true (0 = a real wall collision happened this frame) - computed here,
 ## before _apply_jump and _apply_run, rather than inline inside
-## _apply_gravity as before, so _apply_run can also see this frame's value
-## instead of the previous frame's stale one (needed for the detach-grace
-## horizontal lock).
+## _apply_gravity as before, so both see this frame's value instead of the
+## previous frame's stale one. (_apply_run no longer has any horizontal
+## use for it as of milestone 4 tuning iteration 9 - wall_detach is purely
+## vertical-cling/wall-jump-eligibility bookkeeping now - but the ordering
+## is unchanged since _apply_jump still needs it fresh for state.wall_
+## attached.)
 ##
 ## state.wall_attached is the single source of truth for "currently
 ## treated as attached to a wall" (cling/wall-slide gravity, wall jump
@@ -212,16 +215,9 @@ static func _apply_jump(state: MovementState, config: MovementConfig) -> void:
 	else:
 		wall_coyote = maxi(wall_coyote - 1, 0)
 
-	var wall_jump_lockout: int = state.timers.get("wall_jump_lockout", 0)
-	if fires_wall:
-		wall_jump_lockout = config.wall_jump_lockout_frames
-	else:
-		wall_jump_lockout = maxi(wall_jump_lockout - 1, 0)
-
 	state.timers["coyote"] = coyote
 	state.timers["jump_buffer"] = jump_buffer
 	state.timers["wall_coyote"] = wall_coyote
-	state.timers["wall_jump_lockout"] = wall_jump_lockout
 
 ## Away-from-wall (holding the opposite direction) is the strong jump;
 ## anything else - including holding back into the wall, which SPEC.md
@@ -244,51 +240,29 @@ static func _current_wall_side(state: MovementState) -> float:
 		return 1.0
 	return state.last_wall_side
 
-## During wall_detach_grace, horizontal input has no authority - a
-## commitment window, not a slow release. wall_detach was already
-## refreshed for this frame by _update_wall_attachment above. wall_detach
-## == 0 means actively pressing into the wall right now, which isn't the
-## grace window (that's just normal cling) - only 1..wall_detach_grace
-## counts.
-##
-## Milestone 4 tuning iteration 5 fixed a hard-freeze-then-snap in the
-## lockout window above (velocity.x hard-pinned, then an instant, possibly
-## turnaround-multiplied reversal the moment it released); the detach-grace
-## window below used to hard-pin to exactly 0.0 the same way, but nothing
-## exercised that combination on a real wall-jump launch velocity until
-## the wall_detach proximity fix (_update_wall_attachment) started letting
-## toward/neutral-fired wall jumps actually traverse this window instead of
-## short-circuiting out of it via a permanently-frozen wall_detach - a
-## wall-jump launch, partially decayed by lockout's own friction, would
-## then get yanked to exactly 0 the instant lockout released into this
-## branch: the same class of hitch, same fix (friction, not a hard pin).
+## Milestone 4 tuning iteration 9: wall jumps no longer lock out horizontal
+## input at all - removed both the wall_jump_lockout window (used to grant
+## zero input authority for wall_jump_lockout_frames, friction-decaying the
+## launch velocity instead) and the wall_detach_grace horizontal pin (zero
+## authority, friction-decaying toward 0, for the rest of the grace window
+## after that). Per explicit request: the player should be able to
+## precisely control how far a wall jump carries by varying how long they
+## hold the movement key afterward, same as anywhere else airborne - the
+## old locked-out windows made the trajectory feel "scripted" instead of
+## responsive, in direct tension with SPEC.md section 3's "Full air
+## control" pillar (this was always a special-cased exception to it).
+## _fire_wall_jump still assigns the launch velocity directly as before;
+## from the very next frame on, ordinary input/accel/friction/turnaround
+## below governs it exactly like any other airborne movement - holding the
+## away direction keeps target_speed pulling toward max_run_speed (so a
+## strong wall jump's higher launch speed decays toward it, still carrying
+## further than releasing early would), releasing goes through the neutral
+## friction branch, and pressing back into the wall triggers the same
+## turnaround-boosted deceleration used everywhere else. wall_detach itself
+## is untouched by this - it still governs vertical cling behavior and wall
+## jump re-eligibility (see _update_wall_attachment/_apply_jump), just no
+## longer has any horizontal-authority side effect here.
 static func _apply_run(state: MovementState, config: MovementConfig) -> void:
-	# The wall jump's imparted velocity.x carries through un-fought (no
-	# input authority) for wall_jump_lockout_frames - this timer was
-	# already refreshed by _apply_jump earlier this same frame. Friction
-	# (not input) still applies during the HOLD portion of lockout,
-	# though (but not the exact frame the jump just fired, identified by
-	# the timer still reading its just-set max value - the launch value
-	# itself must come through untouched that frame): a hard freeze
-	# followed by an instant, potentially turnaround-multiplied reversal
-	# (if the player held the original into-direction the whole time)
-	# read as an abrupt stop-then-snap-back. Letting friction decay it a
-	# little first softens that transition without granting any input
-	# authority during the window.
-	var wall_jump_lockout: int = state.timers.get("wall_jump_lockout", 0)
-	if wall_jump_lockout > 0:
-		if wall_jump_lockout < config.wall_jump_lockout_frames:
-			var lockout_friction := config.ground_friction if state.on_floor else config.air_friction
-			state.velocity.x = move_toward(state.velocity.x, 0.0, lockout_friction)
-		return
-
-	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
-	var in_detach_grace := (not state.on_floor) and wall_detach > 0 and wall_detach <= config.wall_detach_grace
-	if in_detach_grace:
-		var detach_friction := config.ground_friction if state.on_floor else config.air_friction
-		state.velocity.x = move_toward(state.velocity.x, 0.0, detach_friction)
-		return
-
 	var input_dir := 0.0
 	if state.move_left:
 		input_dir -= 1.0

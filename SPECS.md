@@ -63,17 +63,31 @@ them as the initial state of a knob, not as a requirement.
 |---|---|
 | Max run speed | 2.125 px/frame (reduced 15% from 2.5 in milestone 4 tuning) |
 | Ground acceleration | 0.10625 px/frame² (reduced 15% then 50% more from 0.25) |
-| Ground friction | 0.40 px/frame² |
-| Air acceleration | 0.0765 px/frame² (reduced 15% then 50% more from 0.18) |
+| Ground friction | 0.60 px/frame² (increased 50% from 0.40 in milestone 4 tuning, to reduce ground stopping inertia - see note below) |
+| Air acceleration | 0.15 px/frame² (roughly doubled from 0.0765 in milestone 4 tuning, for turnaround responsiveness and precise air control - see note below) |
 | Air friction | 0.10 px/frame² |
-| Turnaround multiplier | 1.8× accel when input opposes velocity |
+| Turnaround multiplier | 2.5× accel when input opposes velocity (increased from 1.8 in milestone 4 tuning) |
+
+**Ground friction, air acceleration, and the turnaround multiplier were all
+increased together to address one complaint: reversing direction (and
+stopping) felt slow and "slippery," like the player carried too much
+inertia.** Explicit constraint on this change: general acceleration (how
+fast the player reaches top speed continuing in one direction) was NOT
+supposed to go up — only the responsiveness of stopping and reversing. Air
+acceleration is the exception, increased directly per request (it also
+governs precise air-control corrections, not just turnaround) and it's a
+shared term with air turnaround (`air_acceleration × turnaround_multiplier`),
+so both goals point the same direction there. Ground acceleration is
+untouched — ground turnaround responsiveness comes entirely from
+`turnaround_multiplier`, which is a shared value (ground and air both read
+it), doubling as the fix for "hard to turn around" in the air too.
 
 ### Gravity & jump
 | Param | Value |
 |---|---|
-| Gravity | 0.365 px/frame² (reduced 10% from 0.45, then a further ~10% to 0.365, both in milestone 4 tuning) |
+| Gravity | 0.292 px/frame² (reduced 10% from 0.45, then a further ~10%, then a further 20%, across three milestone 4 tuning sessions — 0.45 → 0.405 → 0.365 → 0.292) |
 | Max fall speed | 5.5 px/frame |
-| Jump velocity | -6.5 px/frame |
+| Jump velocity | -3.9 px/frame (reduced 40% from -6.5 in milestone 4 tuning) |
 | Double jump velocity | -5.8 px/frame |
 | Jump cut (on early release) | velocity × 0.45 |
 | Apex hang | gravity × 0.60 while `abs(vy) < 1.0` |
@@ -94,7 +108,6 @@ too). Replaced by `collision_width_margin_px` under Collider, below.
 | Wall slide max fall speed | 1.0 px/frame (reduced from 1.5, beyond the general gravity reduction, in milestone 4 tuning) |
 | Wall cling | 13 frames of zero gravity on first touch with real momentum into the wall |
 | Wall jump velocity | (±4.0, -6.0) |
-| Wall jump input lockout | 8 frames of no horizontal input authority |
 | Wall detach grace | 22 frames of actively holding away (or genuinely not touching) before cling actually releases (8 -> +75% -> 14, then +60% -> 22, across two milestone 4 tuning sessions) |
 | Wall coyote time | 6 frames after losing wall contact during which a wall jump still fires |
 | Wall cling entry speed cap | 4.0 px/frame max magnitude of velocity.y carried into a cling while falling or at rest |
@@ -165,11 +178,9 @@ otherwise arm the same momentum check the instant the player left the
 ground via any jump, even one with no horizontal component at all — not
 what "momentum into the wall" is supposed to mean.
 
-During `wall_detach_grace`, horizontal input has no authority — a commitment
-window, not a slow release. Velocity.x decays toward 0 via friction during
-this window rather than being hard-zeroed (see the lockout paragraph below —
-same fix, same reason). Vertical behavior (cling/slide/preserved momentum) is
-unaffected, and a wall jump remains available throughout.
+`wall_detach_grace` only governs vertical/eligibility behavior (cling, wall-
+slide, wall jump re-eligibility) — it has no effect on horizontal input
+authority at all. See "Full air control after a wall jump" below.
 
 **Only actively pressing away, or genuinely no longer near a wall, advances
 the detach countdown — neutral input while still actually beside a wall does
@@ -200,16 +211,26 @@ the moment it isn't, the same countdown that already governed active
 away-pressing governs this too — a brief `wall_detach_grace`-frame window
 after leaving, not forever.
 
-**Wall jump input lockout still grants zero input authority for its full 8
-frames, but friction now applies during it** (previously velocity.x was
-completely frozen, not even decaying). If the player held the original
-into-the-wall direction the whole time, the instant lockout ended used to
-produce a sudden turnaround-multiplied reversal back toward the wall — an
-abrupt stop-then-snap-back. Friction decaying the imparted velocity during
-the hold softens that transition without granting any input authority. The
-detach-grace window right after it got the identical treatment for the
-identical reason, once a toward/neutral-fired wall jump could actually reach
-it (previously it couldn't, on account of the bug two paragraphs up).
+**Full air control after a wall jump (milestone 4 tuning iteration 9).** A
+wall jump used to lock out horizontal input entirely for `wall_jump_lockout_
+frames` (velocity.x friction-decaying but unresponsive to input), followed
+by the `wall_detach_grace` window doing the same. Both were removed per
+explicit request: the player should be able to precisely judge how far a
+wall jump carries them by varying how long they hold the movement key
+afterward, and a scripted, unresponsive trajectory for up to `wall_detach_
+grace` frames made that impossible — direct tension with this document's
+own "Full air control" pillar (section 3), which the wall jump was always a
+special-cased exception to. `_fire_wall_jump` still assigns the launch
+velocity as an instant impulse; from the very next frame on, it's governed
+by the exact same input/acceleration/friction/turnaround rules as any other
+airborne movement — no special case left at all. Concretely: holding the
+away direction keeps `target_speed` pulling toward `max_run_speed` (a strong
+wall jump's higher launch speed decays toward it, so continuing to hold
+still covers more ground than releasing early), releasing goes through the
+normal neutral-friction branch, and pressing back toward the wall triggers
+the same turnaround-boosted deceleration used everywhere else — including,
+now, potentially walking back into the same real wall for a second,
+perfectly legitimate wall jump, which is not a bug.
 
 **No stamina meter.** Wall hold is time-limited by the cling window, not by a
 draining resource. This is Ori, not Celeste.
@@ -395,7 +416,10 @@ milestone is complete.
 - Dash: exactly 12 frames at constant 7.0 px/frame, unaffected by gravity.
 - Dash refill on ground and wall contact; no refill mid-air otherwise.
 - Double jump available once per airborne period.
-- Wall jump lockout: horizontal input has no authority for 8 frames.
+- Wall jump grants full input authority immediately (no lockout, milestone
+  4 tuning iteration 9): held opposing input decelerates from the very next
+  frame, and holding away longer measurably increases total distance
+  traveled versus releasing early.
 - Collision width margin: a jump clipping a corner within the margin passes
   through cleanly (no ceiling hit); a bigger overlap still blocks. A ledge
   keeps the player grounded as long as any part of the margin-narrowed hitbox

@@ -34,7 +34,8 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("ledge_forgiveness_still_falls_once_fully_clear", _test_ledge_forgiveness_still_falls_once_fully_clear)
 	runner.register("never_tunnels_through_floor_at_max_fall_speed", _test_no_tunneling_at_max_fall_speed)
 	runner.register("input_map_binds_move_and_jump_to_spec_keys", _test_input_map_bindings)
-	runner.register("wall_jump_lockout_blocks_input_for_8_frames", _test_wall_jump_lockout)
+	runner.register("wall_jump_grants_immediate_input_authority", _test_wall_jump_grants_immediate_input_authority)
+	runner.register("wall_jump_distance_scales_with_hold_duration", _test_wall_jump_distance_scales_with_hold_duration)
 	runner.register("wall_cling_zero_gravity_then_slide_cap", _test_wall_cling_then_slide)
 	runner.register("wall_slide_caps_fall_speed_from_faster_initial_fall", _test_wall_slide_caps_fall_speed)
 	runner.register("wall_jump_away_from_wall_is_strong", _test_wall_jump_away_is_strong)
@@ -57,7 +58,7 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("wall_detach_grace_keeps_cling_attached", _test_wall_detach_grace_keeps_cling_attached)
 	runner.register("wall_cling_persists_indefinitely_on_neutral", _test_wall_cling_persists_indefinitely_on_neutral)
 	runner.register("wall_coyote_time_allows_late_wall_jump", _test_wall_coyote_time_allows_late_wall_jump)
-	runner.register("wall_detach_grace_locks_horizontal_movement", _test_wall_detach_grace_locks_horizontal_movement)
+	runner.register("wall_detach_grace_no_longer_locks_horizontal_movement", _test_wall_detach_grace_no_longer_locks_horizontal_movement)
 	runner.register("wall_jump_during_late_grace_does_not_burn_double_jump", _test_wall_jump_during_late_grace_does_not_burn_double_jump)
 	runner.register("reset_clears_state_and_returns_to_spawn", _test_reset_clears_state_and_returns_to_spawn)
 	runner.register("wall_jump_toward_wall_cannot_chain_for_unlimited_height", _test_wall_jump_toward_wall_cannot_chain_for_unlimited_height)
@@ -182,7 +183,12 @@ func _test_jump_corner_near_miss_passes_through() -> String:
 	state.position = Vector2(13, 24)  # narrow right edge at 16: exactly clears tile [16,32)
 	state.velocity = Vector2(0, config.jump_velocity)
 
-	var frames := InputPlayback.hold({}, 5)
+	# Milestone 4 tuning iteration 9: jump_velocity dropped 40%, so this
+	# needs more frames than before to clear the same 24px - the frame
+	# count here was never load-bearing for what's actually under test
+	# (the margin-narrowed hitbox clearing a near-miss corner), just needed
+	# to be "enough time to rise past y=0."
+	var frames := InputPlayback.hold({}, 15)
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process, solid_tiles)
 
 	var failure := Expect.is_true(history[-1].position.y < 0.0, "player should have risen past y=0, got y=%s" % history[-1].position.y)
@@ -303,42 +309,57 @@ func _check_action_key(action: String, expected_keycode: Key) -> String:
 ## collision resolution, which _test_wall_detection_from_real_collision
 ## covers separately.
 
-## SPEC.md section 10's only explicitly-named wall rule. Fires a strong
-## (away-from-wall) jump at frame 0, then holds the opposite direction
-## (fighting the launch) for the next several frames. As implemented,
-## wall_jump_lockout_frames (8) covers frames 0..7 inclusive - the launch
-## frame counts as the first locked frame, since the timer is refreshed
-## before _apply_run reads it that same frame.
-##
-## Milestone 4 tuning iteration 5: lockout no longer freezes vx outright -
-## friction still decays it (just not player input), so the eventual
-## input-driven reversal isn't a sudden snap from a dead-flat hold. Checks
-## the exact friction-decay curve during lockout instead of an unchanging
-## value, then confirms real (turnaround-boosted, since still opposing)
-## acceleration takes over once lockout expires.
-func _test_wall_jump_lockout() -> String:
+## Milestone 4 tuning iteration 9: wall jumps used to lock out horizontal
+## input for wall_jump_lockout_frames (a "commitment window") before this
+## - explicitly removed per request, since the scripted, unresponsive
+## trajectory it produced was in direct tension with SPEC.md section 3's
+## "Full air control" pillar and made it impossible to judge distance by
+## variable hold duration. Fires a strong (away) wall jump, then holds the
+## OPPOSITE (back into the wall) direction starting the very next frame -
+## if input has genuine immediate authority, vx should already be
+## decelerating via the real turnaround-boosted rate at frame 1, not still
+## following a frozen/friction-only curve.
+func _test_wall_jump_grants_immediate_input_authority() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
 
 	var frames: Array[Dictionary] = [{"on_wall_left": true, "jump_pressed": true, "move_right": true}]
-	for i in range(9):
-		frames.append({"on_wall_left": false, "move_right": false, "move_left": true, "jump_pressed": false})
+	for i in range(5):
+		frames.append({"move_right": false, "move_left": true, "jump_pressed": false})
 
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
-	var launched_vx: float = history[0].velocity.x
-	var failure := Expect.approx(launched_vx, config.wall_jump_velocity.x, "vx immediately after a strong (away-from-wall) wall jump")
-	if failure != "":
-		return failure
-
-	var expected := launched_vx
-	for i in range(1, 8):
-		expected = move_toward(expected, 0.0, config.air_friction)
-		failure = Expect.approx(history[i].velocity.x, expected, "vx during wall jump lockout at frame %d should decay via friction, not stay frozen or respond to input" % i)
+	var expected: float = history[0].velocity.x
+	for i in range(1, history.size()):
+		var opposing: bool = sign(expected) != 0.0 and sign(expected) != sign(-1.0)
+		var rate := config.air_acceleration * (config.turnaround_multiplier if opposing else 1.0)
+		expected = move_toward(expected, -config.max_run_speed, rate)
+		var failure := Expect.approx(history[i].velocity.x, expected, "vx at frame %d should already reflect the held opposing input via the real turnaround-boosted rate, not a frozen or friction-only curve" % i)
 		if failure != "":
 			return failure
+	return ""
 
-	return Expect.is_true(history[8].velocity.x < expected, "vx at frame 8 (lockout expired) should respond to the held opposing input, decreasing further than friction alone would")
+## The functional ask this whole change serves: holding the away direction
+## longer after a wall jump should carry the player noticeably farther
+## than releasing early - proving distance is genuinely a function of held
+## input duration, not a fixed scripted trajectory.
+func _test_wall_jump_distance_scales_with_hold_duration() -> String:
+	var config := _default_config()
+
+	var short_distance := _run_wall_jump_and_measure_distance(config, 3)
+	var long_distance := _run_wall_jump_and_measure_distance(config, 40)
+
+	return Expect.is_true(long_distance > short_distance + 1.0, "holding the away direction longer after a wall jump (%s) should carry the player noticeably farther than releasing almost immediately (%s)" % [long_distance, short_distance])
+
+func _run_wall_jump_and_measure_distance(config: MovementConfig, hold_frames: int) -> float:
+	var state := MovementState.new()
+	var frames: Array[Dictionary] = [{"on_wall_left": true, "jump_pressed": true, "move_right": true}]
+	for i in range(hold_frames - 1):
+		frames.append({"jump_pressed": false, "move_right": true})
+	for i in range(60 - hold_frames):
+		frames.append({"move_right": false})
+	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+	return history[-1].position.x
 
 ## First wall_cling_frames (13) frames of contact: velocity.y untouched by
 ## gravity (SPEC.md section 4 "zero gravity", taken literally - not a
@@ -378,6 +399,13 @@ func _test_wall_slide_caps_fall_speed() -> String:
 
 	return Expect.approx(history[0].velocity.y, config.wall_slide_max_fall_speed, "vy on the first sliding frame should clamp to the wall-slide cap even from a faster initial fall")
 
+## Milestone 4 tuning iteration 9: wall jumps grant full input authority
+## from the launch frame on (no lockout - see _apply_run), so a directional
+## key already held at fire time (needed here anyway, to select the strong
+## variant) also pulls vx toward max_run_speed that same frame, same as
+## gravity already does to vy. Since the launch speed exceeds max_run_speed,
+## that pull is toward a lower target, so vx is expected to read launch
+## minus one frame of air_acceleration, not the raw launch value.
 func _test_wall_jump_away_is_strong() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
@@ -385,11 +413,14 @@ func _test_wall_jump_away_is_strong() -> String:
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
 	var vel := history[0].velocity
-	var failure := Expect.approx(vel.x, config.wall_jump_velocity.x, "strong wall jump vx (away from a wall on the left, so positive)")
+	var failure := Expect.approx(vel.x, config.wall_jump_velocity.x - config.air_acceleration, "strong wall jump vx (away from a wall on the left, so positive - one frame of air_acceleration already pulling it toward max_run_speed)")
 	if failure != "":
 		return failure
 	return Expect.approx(vel.y, config.wall_jump_velocity.y + config.gravity, "strong wall jump vy (one frame of gravity already applied)")
 
+## No directional input held here, so vx goes through the neutral friction
+## branch (not accel) this same frame - one frame of air_friction already
+## decaying it toward 0, same idea as the strong-jump test above.
 func _test_wall_jump_neutral_is_weak_and_high() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
@@ -397,7 +428,7 @@ func _test_wall_jump_neutral_is_weak_and_high() -> String:
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
 	var vel := history[0].velocity
-	var failure := Expect.approx(vel.x, config.wall_jump_neutral_velocity.x, "neutral wall jump vx (no directional input held)")
+	var failure := Expect.approx(vel.x, config.wall_jump_neutral_velocity.x - config.air_friction, "neutral wall jump vx (no directional input held - one frame of air_friction already decaying it)")
 	if failure != "":
 		return failure
 	return Expect.approx(vel.y, config.wall_jump_neutral_velocity.y + config.gravity, "neutral wall jump vy (one frame of gravity already applied)")
@@ -517,6 +548,13 @@ func _test_double_jump_available_once_per_airborne_period() -> String:
 		frames.append({})
 	frames.append({"jump_pressed": true})
 	frames.append({"jump_pressed": false})
+	# Milestone 4 tuning iteration 9: gravity dropped further, so a fixed
+	# +1.0 margin only 2 frames after the first press was no longer a
+	# reliable "didn't refire" signal (gravity recovers vy more slowly now)
+	# - widened the gap so the two cases (refired vs. not) stay clearly
+	# separated regardless of the exact gravity value.
+	for i in range(5):
+		frames.append({})
 	frames.append({"jump_pressed": true})
 	frames.append({"jump_pressed": false})
 
@@ -527,7 +565,7 @@ func _test_double_jump_available_once_per_airborne_period() -> String:
 	if failure != "":
 		return failure
 
-	var second_press_frame := 12
+	var second_press_frame := 17
 	return Expect.is_true(history[second_press_frame].velocity.y > config.double_jump_velocity + 1.0, "second mid-air jump press should NOT fire another double jump (already consumed this airborne period)")
 
 func _test_dash_direction_snapping() -> String:
@@ -947,12 +985,16 @@ func _run_wall_coyote_scenario(config: MovementConfig, frames_after_losing_conta
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 	return history[press_at_call].velocity.y
 
-## Milestone 4 tuning iteration 2, item 2: the detach grace window used to
-## leave horizontal movement fully responsive, which felt like a "slow
-## release" rather than a commitment window. During the grace, velocity.x
-## should be pinned at 0 regardless of held input, then respond normally
-## again the instant grace expires.
-func _test_wall_detach_grace_locks_horizontal_movement() -> String:
+## Milestone 4 tuning iteration 2, item 2 originally made the detach grace
+## window pin velocity.x to exactly 0 regardless of held input - a
+## deliberate "commitment window." Milestone 4 tuning iteration 9 removed
+## that pin entirely, per explicit request for full, immediate air control
+## after leaving a wall (SPEC.md section 3's "Full air control" pillar).
+## This test now asserts the opposite of what it used to: held opposing
+## input should produce normal, real (turnaround-boosted) deceleration
+## starting the very next frame, all the way through what used to be the
+## whole grace window - no pin, no delay, at any point.
+func _test_wall_detach_grace_no_longer_locks_horizontal_movement() -> String:
 	var config := _default_config()
 	var state := MovementState.new()
 
@@ -962,14 +1004,15 @@ func _test_wall_detach_grace_locks_horizontal_movement() -> String:
 
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 
+	var expected: float = history[0].velocity.x
 	for i in range(1, config.wall_detach_grace + 1):
-		var failure := Expect.approx(history[i].velocity.x, 0.0, "vx during the detach grace window at frame %d should be pinned at 0 despite held opposing input" % i)
+		var opposing: bool = sign(expected) != 0.0 and sign(expected) != sign(1.0)
+		var rate := config.air_acceleration * (config.turnaround_multiplier if opposing else 1.0)
+		expected = move_toward(expected, config.max_run_speed, rate)
+		var failure := Expect.approx(history[i].velocity.x, expected, "vx during what used to be the detach grace window at frame %d should follow normal turnaround-boosted input response, not stay pinned at 0" % i)
 		if failure != "":
 			return failure
-
-	var past_grace: Array[Dictionary] = [{"on_wall_left": false, "move_left": false, "move_right": true}]
-	var post_history := InputPlayback.run(state, config, past_grace, PlayerMovement.process)
-	return Expect.is_true(post_history[0].velocity.x > 0.0, "vx one frame past the detach grace window should respond to held input again")
+	return ""
 
 ## Milestone 4 tuning iteration 4: a wall jump used to only remain
 ## available via wall_coyote_time (6 frames) after releasing the wall -
@@ -991,7 +1034,7 @@ func _test_wall_jump_during_late_grace_does_not_burn_double_jump() -> String:
 	var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
 	var fire_frame := history.size() - 1
 
-	var failure := Expect.approx(history[fire_frame].velocity.x, config.wall_jump_velocity.x, "pressing away during late detach grace should fire a strong (away-from-wall) wall jump")
+	var failure := Expect.approx(history[fire_frame].velocity.x, config.wall_jump_velocity.x - config.air_acceleration, "pressing away during late detach grace should fire a strong (away-from-wall) wall jump (one frame of air_acceleration already pulling it toward max_run_speed, same as any other wall jump)")
 	if failure != "":
 		return failure
 	failure = Expect.approx(history[fire_frame].velocity.y, config.wall_jump_velocity.y + config.gravity, "vy should match the strong wall jump's launch value (one frame of gravity already applied, same as any other wall jump)")
@@ -1065,7 +1108,14 @@ func _test_wall_jump_toward_wall_cannot_chain_for_unlimited_height() -> String:
 	var config := _default_config()
 	var wall_col := 0
 	var solid_tiles: Dictionary = {}
-	for row in range(8, 60):
+	# Row band starts well above the player's spawn height (not just at
+	# it) so horizontal contact isn't racing against how fast gravity
+	# drops the player into vertical alignment - air_acceleration got a
+	# lot larger in milestone 4 tuning iteration 9, and the old range(8,
+	# 60) band (starting just below spawn height) let the player reach
+	# the wall's x-column before falling far enough to vertically overlap
+	# it, so it sailed straight through with no collision at all.
+	for row in range(-20, 60):
 		solid_tiles[Vector2i(wall_col, row)] = true
 	var state := MovementState.new()
 	state.position = Vector2(30, 100)
@@ -1081,8 +1131,17 @@ func _test_wall_jump_toward_wall_cannot_chain_for_unlimited_height() -> String:
 	if setup_failure != "":
 		return setup_failure
 
+	# Milestone 4 tuning iteration 9: turnaround_multiplier and
+	# air_acceleration both went up a lot (decrease-inertia request), so
+	# holding "into" for as long as 20 frames post-launch is now enough
+	# reversal power to legitimately walk the player back into the SAME
+	# real wall - a genuine, correct re-contact, not the chain-without-
+	# contact bug this test exists to catch. Kept short enough (3 frames)
+	# that velocity never crosses back through 0 before switching to
+	# neutral, so it keeps drifting away and can never legitimately
+	# return.
 	var frames: Array[Dictionary] = [{"jump_pressed": true, "move_left": true}]
-	for i in range(20):
+	for i in range(3):
 		frames.append({"jump_pressed": false, "move_left": true})
 	for i in range(100):
 		frames.append({"jump_pressed": (i % 5 == 0), "move_left": false})
@@ -1137,17 +1196,25 @@ func _test_wall_state_ends_when_walking_off_bottom_of_wall() -> String:
 ## correct to away) should carry momentum through with no freeze-then-snap
 ## - every frame-to-frame change in vx should stay within one frame's worth
 ## of (turnaround-boosted) acceleration or friction, never a sudden jump.
-## This is also what proves the detach-grace hard-pin-to-zero fix in
-## _apply_run actually closes the gap: a toward/neutral-fired wall jump now
-## genuinely traverses that window (see _update_wall_attachment's fix)
-## instead of being frozen out of it, so a real launch velocity meeting a
-## hard pin would have produced exactly this kind of jump if left
-## unfixed.
+## Originally written to prove a detach-grace hard-pin-to-zero fix closed a
+## real hitch; milestone 4 tuning iteration 9 removed that whole pinning
+## mechanism (wall jumps get full input authority immediately now, see
+## _apply_run), so there's no pin left to protect against - kept as a
+## general regression guard that ordinary accel/friction/turnaround bounds
+## hold continuously across a wall jump's aftermath, with no special-cased
+## behavior left to produce a discontinuity in the first place.
 func _test_wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity() -> String:
 	var config := _default_config()
 	var wall_col := 0
 	var solid_tiles: Dictionary = {}
-	for row in range(8, 60):
+	# Row band starts well above the player's spawn height (not just at
+	# it) so horizontal contact isn't racing against how fast gravity
+	# drops the player into vertical alignment - air_acceleration got a
+	# lot larger in milestone 4 tuning iteration 9, and the old range(8,
+	# 60) band (starting just below spawn height) let the player reach
+	# the wall's x-column before falling far enough to vertically overlap
+	# it, so it sailed straight through with no collision at all.
+	for row in range(-20, 60):
 		solid_tiles[Vector2i(wall_col, row)] = true
 	var state := MovementState.new()
 	state.position = Vector2(30, 100)
@@ -1155,8 +1222,14 @@ func _test_wall_jump_toward_wall_then_correcting_has_no_velocity_discontinuity()
 	var approach: Array[Dictionary] = InputPlayback.hold({"move_left": true}, 40)
 	InputPlayback.run(state, config, approach, PlayerMovement.process, solid_tiles)
 
+	# See the matching comment in _test_wall_jump_toward_wall_cannot_chain_
+	# for_unlimited_height - the stronger turnaround/acceleration from this
+	# same tuning session means a long "into" hold now legitimately walks
+	# the player back into the real wall, which is a correct hard-stop
+	# collision, not a discontinuity bug. Kept short enough to never
+	# reverse velocity back through 0.
 	var frames: Array[Dictionary] = [{"jump_pressed": true, "move_left": true}]
-	for i in range(20):
+	for i in range(3):
 		frames.append({"jump_pressed": false, "move_left": true})
 	for i in range(40):
 		frames.append({"move_left": false, "move_right": true})

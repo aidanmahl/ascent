@@ -187,11 +187,52 @@ summary.
 
 `tools/validate.cmd`: 44/44 green.
 
+- **Iteration 9 — feel pass + wall jump input authority, same session**:
+  - Gravity −20% (0.365 → 0.292).
+  - Jump velocity −40% (-6.5 → -3.9).
+  - Ground friction +50% (0.4 → 0.6) and air acceleration roughly doubled
+    (0.0765 → 0.15), both per explicit request to reduce turnaround/stop
+    "inertia" without increasing general acceleration. `turnaround_
+    multiplier` also increased (1.8 → 2.5, not explicitly named but the
+    only lever that actually governs turnaround responsiveness — friction
+    only applies when input is released, not while actively reversing;
+    flagged this reasoning clearly since it goes beyond the literally-named
+    values). Ground acceleration itself is untouched.
+  - **Wall jumps now grant full input authority immediately — removed
+    both the `wall_jump_lockout` window and the `wall_detach_grace`
+    horizontal pin entirely.** Per explicit request: distance after a wall
+    jump should be precisely controllable by varying hold duration, which
+    a scripted no-input-authority window made impossible. This was always
+    in tension with SPEC.md section 3's own "Full air control" pillar; the
+    wall jump is no longer a special case. `wall_jump_lockout_frames`
+    removed from `MovementConfig` entirely (fully dead once the branch
+    reading it was gone) — same treatment `corner_correction_px` got when
+    it was superseded.
+  - Fallout from the accel/turnaround increase: two existing tests that
+    held "into the wall" input for many frames after a wall jump started
+    legitimately walking the player back into the same real wall (a real,
+    correct collision, not a bug) — shortened both holds so they no longer
+    race against the new, much stronger reversal rate. Two tests
+    (`_test_wall_jump_lockout`, `_test_wall_detach_grace_locks_horizontal_
+    movement`) tested mechanisms that no longer exist — rewritten to test
+    the new intended behavior (immediate authority, distance scales with
+    hold duration) rather than deleted. Three "exact launch velocity" wall
+    jump assertions needed a one-frame accel/friction adjustment, same
+    pattern already established for vy ("one frame of gravity already
+    applied") — now vx gets the same treatment since input authority is
+    immediate. Two geometry-fragile tests (using a wall column starting
+    just below spawn height) fixed to start well above spawn height
+    instead — the much larger air_acceleration let the player reach the
+    wall's x-column before falling far enough to vertically overlap it,
+    sailing straight through with no collision.
+
+`tools/validate.cmd`: 44/44 green (2 rewritten, not net new — see above).
+
 ## Next
 - **Milestone 4 gate is still open.** Do not proceed to milestone 5
-  without approval. Iteration 8's fix is fresh, on top of iteration 7's
-  changes which were never confirmed played before this report came in —
-  get the whole batch played together before the next round.
+  without approval. Iteration 9 is a significant mechanism change (full
+  air control after wall jumps) on top of iteration 7's still-unconfirmed
+  feel values — get the whole batch played before the next round.
 
 ## Surprised by / flagging
 - **Dash locks out jump and run, not just gravity.** SPEC.md section 4

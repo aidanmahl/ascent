@@ -25,6 +25,13 @@ grace) have been confirmed played yet** - only the momentum-initiation
 mechanism got direct feedback (the neutral-jump bug report), not the
 tuning values from the same iteration. Don't assume those are dialed in.
 
+Iteration 9 (same session, immediately after iteration 8) is a bigger one:
+another feel pass (gravity -20% more, jump velocity -40%, ground friction
++50%, air acceleration ~2x, turnaround_multiplier way up) PLUS a real
+mechanism removal - wall jumps no longer lock out horizontal input at all,
+see "Full air control after wall jumps" below. None of iteration 9 has
+been played yet either.
+
 Check `git log`/`STATUS.md` for what's actually committed/pushed as of
 whenever you're reading this.
 
@@ -157,6 +164,25 @@ whenever you're reading this.
    "the wall cling indicator on the player should be on the side of the
    wall, not always the left" - fixed in `player.gd`/no movement-core
    change, see that same section.
+
+10. **Tuning iteration 9, same session**: another feel pass, plus "I
+    should be able to precisely determine how far away from the wall I
+    end up by holding the movement key... right now my movement is
+    scripted after a wall jump" -
+    - Gravity -20% (0.365 -> 0.292).
+    - Jump velocity -40% (-6.5 -> -3.9).
+    - "Increase air acceleration and ground friction... do not increase
+      acceleration in general, just decrease inertia" - ground_friction
+      +50%, air_acceleration ~2x. Also increased turnaround_multiplier
+      (1.8 -> 2.5) even though not literally named - friction alone
+      doesn't govern active-reversal speed in this architecture (it only
+      applies when input is released, not while opposing input is held),
+      so it wouldn't have fixed the stated "hard to turn around" complaint
+      on its own. Flagged this reasoning explicitly rather than silently
+      picking one interpretation.
+    - Wall jump input lockout AND the wall_detach_grace horizontal pin
+      both removed entirely - see "Full air control after wall jumps"
+      below.
 
 ## Group A/B regression fix (this session, iteration 6)
 
@@ -354,6 +380,87 @@ changes needed. Verified visually both sides via `tools/screenshot.cmd`
 col-82 wall, approached from the left this time for a real on_wall_right
 contact, confirmed the strip rendered on the right edge; reverted after).
 
+## Full air control after wall jumps (this session, iteration 9)
+
+User: "I should be able to do a into wall wall jump and precisely
+determine how far away from the wall I will end up by holding the
+movement key for a variable amount of time - right now, it seems like
+after a wall jump my movement is scripted and I cant really influence how
+far I jump until jump is completed."
+
+This is a design pivot, not a bug fix - removed the two mechanisms that
+made a wall jump's aftermath deliberately unresponsive to input:
+`wall_jump_lockout` (zero input authority for `wall_jump_lockout_frames`,
+friction-decaying the launch velocity) and the `wall_detach_grace`
+horizontal pin (same treatment, for the rest of the grace window after
+that). Both were intentional "commitment window" design from earlier
+sessions - explicitly documented in SPEC.md as such - but always sat in
+tension with SPEC.md section 3's own "Full air control" pillar. The user's
+request makes that tension resolve in favor of full air control winning
+for wall jumps too, no exception.
+
+Implementation is a deletion, not an addition: `_apply_run` no longer has
+any special-cased branch before the normal input/accel/friction/turnaround
+logic. `_fire_wall_jump` still assigns the launch velocity as a direct,
+instant impulse (unchanged) - from the very next frame, that velocity is
+just an ordinary starting point for the same rules that govern all other
+airborne movement. `wall_jump_lockout` (the timer) is gone from both
+`_apply_jump` (where it was set) and `_apply_run` (where it was read) -
+nothing sets or reads it anymore, so `wall_jump_lockout_frames` became
+fully dead in `MovementConfig` and was removed outright (same treatment
+`corner_correction_px` got when milestone 4 tuning iteration 3 superseded
+it - CLAUDE.md's "no magic numbers" extends to not leaving unused ones
+around either). `wall_detach`/`wall_detach_grace` themselves are untouched
+- they still matter for vertical cling and wall-jump re-eligibility, just
+lost their one horizontal side effect.
+
+**Real, load-bearing side effect this surfaced**: `turnaround_multiplier`
+went from 1.8 to 2.5 in the same session's feel pass, and `air_acceleration`
+roughly doubled - meaning the turnaround-boosted deceleration rate
+(`air_acceleration * turnaround_multiplier`) more than quadrupled overall
+(0.0765*1.8=0.1377 -> 0.15*2.5=0.375). Two existing tests that held "into
+the wall" input for ~20 frames after firing a wall jump (to simulate the
+old repro of "still holding toward the wall after the jump") started
+producing a LEGITIMATE second collision with the real wall in the test
+geometry - the much stronger reversal walked the player back into it for
+real within the test's window, which is now correct game behavior (you
+CAN walk back into a wall and wall-jump again for real), not the
+chain-without-contact bug those tests exist to catch. Shortened both holds
+to 3 frames (enough to prove "holding into at fire time" without enough
+cumulative reversal to ever cross back through vx=0). Also found: three
+"exact launch velocity" assertions across other wall-jump tests broke for
+an unrelated but related reason - since `_apply_run` now runs
+unconditionally, THE LAUNCH FRAME ITSELF also gets one frame of
+accel/friction applied to vx, exactly the same "one frame of gravity
+already applied" convention these tests already used for vy. Updated to
+subtract one frame of `air_acceleration` (when the launch direction has
+input pulling toward a lower `max_run_speed` target) or `air_friction`
+(when neutral) from the raw launch value.
+
+Two other tests (using a wall column starting at `range(8, 60)`, just
+below the player's spawn height) started failing to make contact at all -
+`air_acceleration` roughly doubling let the player reach the wall's
+x-column while still above the wall's row band (hadn't fallen far enough
+yet), so it sailed through empty space with no collision, then kept moving
+left indefinitely once past it, never returning. Fixed by starting the row
+band well above spawn height (`range(-20, 60)`) instead, removing the race
+between horizontal-approach-speed and vertical-fall-speed entirely rather
+than trying to re-tune frame counts against it.
+
+New tests: `_test_wall_jump_grants_immediate_input_authority` (opposing
+input decelerates via the real turnaround rate starting frame 1, not a
+frozen/friction-only curve) and `_test_wall_jump_distance_scales_with_hold_
+duration` (the actual functional ask - holding away longer measurably
+travels farther than releasing early). `_test_wall_jump_lockout` and
+`_test_wall_detach_grace_locks_horizontal_movement` rewritten in place
+(renamed to `_test_wall_jump_grants_immediate_input_authority` and
+`_test_wall_detach_grace_no_longer_locks_horizontal_movement`
+respectively) since the mechanisms they tested no longer exist - per
+CLAUDE.md, fix a failing test rather than delete it, and a test asserting
+removed behavior needs the same treatment once the removal is deliberate.
+44/44 green, no test count change (2 rewritten, not net new, alongside the
+above fixes to unrelated pre-existing tests).
+
 ## Wall attachment system architecture (current, as of this session)
 
 This got fairly intricate over 7 iterations. State (`MovementState.timers`
@@ -421,14 +528,16 @@ frame, per the perpetual-bump mechanic).
 
 ```
 max_run_speed = 2.125          (was 2.5; -15% then -50% more = -57.5% total)
-ground_acceleration = 0.10625  (was 0.25)
-ground_friction = 0.4          (untouched all session)
-air_acceleration = 0.0765      (was 0.18)
+ground_acceleration = 0.10625  (was 0.25; untouched this session - explicit request not to)
+ground_friction = 0.6          (was 0.4, +50% this session - "decrease inertia" request)
+air_acceleration = 0.15        (was 0.0765, ~+96% this session - same request)
 air_friction = 0.1             (untouched)
-turnaround_multiplier = 1.8    (untouched)
-gravity = 0.365                (was 0.45; -10% -> 0.405, then a further -10% -> 0.365)
+turnaround_multiplier = 2.5    (was 1.8, this session - not literally named in the request but
+                                 the only lever that actually governs active-reversal speed;
+                                 friction alone doesn't touch the opposing-input case, see above)
+gravity = 0.292                (was 0.45; -10% -> 0.405 -> -10% -> 0.365 -> -20% -> 0.292, three sessions)
 max_fall_speed = 5.5           (untouched - user explicitly said leave it)
-jump_velocity = -6.5           (untouched)
+jump_velocity = -3.9           (was -6.5, -40% this session)
 jump_cut_multiplier = 0.45
 apex_hang_gravity_multiplier = 0.6
 apex_hang_threshold = 1.0
@@ -445,7 +554,6 @@ wall_cling_frames = 13          (was 12, +10%)
 wall_cling_entry_speed_cap = 4.0        (new, now only matters for fast downward catches)
 wall_jump_velocity = (4.0, -6.0)
 wall_jump_neutral_velocity = (3.0, -6.5)
-wall_jump_lockout_frames = 8
 wall_detach_grace = 22          (new concept iter1 at 8, then +75% -> 14, then +60% -> 22)
 wall_coyote_time = 6            (new, mostly redundant now, see above)
 collider_size = (10, 16)        (visual/nominal, unchanged)
@@ -453,15 +561,18 @@ tile_size = 16
 collision_width_margin_px = 2.0 (new, replaced corner_correction_px entirely)
 ```
 
-`corner_correction_px` no longer exists as a field - fully removed, not
-deprecated/unused.
+`corner_correction_px` and `wall_jump_lockout_frames` no longer exist as
+fields - both fully removed, not deprecated/unused, when the mechanisms
+using them were removed/superseded.
 
 ## Test suite
 
 44 tests, all green as of this session (was 37 last session, +4 for the
 Group A/B fix, +2 for momentum-initiation, +1 for the grounded-contact
-fix, 1 rewritten - see "Group A/B regression fix", "Momentum-based cling
-initiation", and "Grounded wall contact must not arm momentum" above). Two tests from last
+fix, +2 new/-2 rewritten net zero for the wall-jump-input-authority change
+- see "Group A/B regression fix", "Momentum-based cling initiation",
+"Grounded wall contact must not arm momentum", and "Full air control after
+wall jumps" above). Two tests from last
 session had to be rewritten because they were accidentally exercising
 neutral input where they meant to test the away-holding countdown
 (`_run_wall_coyote_scenario`, `_test_wall_detach_grace_keeps_cling_attached`)
@@ -539,5 +650,11 @@ against, since `_update_wall_attachment` now checks real proximity via
   session. Iteration 7's momentum-initiation MECHANISM got a bug report
   and a follow-up fix (iteration 8) in the same session - but iteration
   7's feel-tuning VALUES (gravity, wall-slide speed, detach grace) have
-  never been confirmed played on their own.** That's the next real gate
-  before milestone 5, not just "did validate.cmd pass."
+  never been confirmed played on their own. Iteration 9 (another feel
+  pass + the wall-jump-lockout removal) is completely unplayed - it's the
+  freshest and largest change of the whole session.** That's the next
+  real gate before milestone 5, not just "did validate.cmd pass." Given
+  how much has changed (jump feels very different now: -40% velocity,
+  -20% more gravity on top of two earlier cuts, full air control after
+  wall jumps), this is a good session to slow down and get direct
+  feedback before stacking more changes on top.

@@ -57,9 +57,6 @@ extends Resource
 @export var wall_jump_velocity: Vector2 = Vector2(4.0, -6.0)
 ## Wall jump with no directional input held - more height, less distance.
 @export var wall_jump_neutral_velocity: Vector2 = Vector2(3.0, -6.5)
-## Frames after a wall jump during which horizontal input does not affect
-## velocity.x, so the launch isn't immediately fought by held input.
-@export var wall_jump_lockout_frames: int = 8
 ## Frames of holding away (or neutral) before cling actually releases -
 ## the player stays attached (zero/capped gravity per the cling/slide
 ## rules) and a wall jump remains available throughout. Without this,
