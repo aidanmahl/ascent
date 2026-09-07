@@ -47,5 +47,11 @@ if (Select-String -Path $outFile, $errFile -Pattern "SCRIPT ERROR", "Parse Error
   Write-Host "=== SCRIPT ERRORS ==="
   exit 1
 }
+# Expedition integration and route reachability checks.
+$expeditionResult = Invoke-GodotStep -GodotArgLine "--headless --path . --script res://tests/expedition_tests.gd" -StepName "expedition" `
+  -OutFile $outFile -ErrFile $errFile -TimeoutSeconds 60
+Get-Content $outFile, $errFile -ErrorAction SilentlyContinue
+if ($expeditionResult.TimedOut -or $expeditionResult.ExitCode -ne "0") { exit 1 }
+if (Select-String -Path $outFile, $errFile -Pattern "SCRIPT ERROR", "Parse Error" -Quiet -ErrorAction SilentlyContinue) { exit 1 }
 Write-Host "=== OK ==="
 exit 0

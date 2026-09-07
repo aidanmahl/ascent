@@ -10,15 +10,22 @@ config_version=5
 
 [application]
 
-config/name="ascent"
+config/name="Ascent | First Light"
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"
+boot_splash/show_image=false
+boot_splash/bg_color=Color(0.04, 0.09, 0.13, 1)
 
 [display]
 
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/size/window_width_override=1280
+window/size/window_height_override=720
+
 window/stretch/mode="viewport"
-window/stretch/aspect="expand"
+window/stretch/aspect="keep"
 
 [input]
 

@@ -2,59 +2,137 @@ extends CharacterBody2D
 class_name Player
 
 @export var config: MovementConfig
-
-var state: MovementState = MovementState.new()
-
-## Solid tile data for the movement core's collision, provided by
-## whatever owns the world (main.gd's placeholder geometry for now,
-## the real level framework from milestone 7 on). Player doesn't build
-## its own world - see CLAUDE.md's "thin shell" rule.
+var state := MovementState.new()
 var solid_tiles: Dictionary = {}
+var spawn_point := Vector2(120, 472)
+var kill_plane_y := 580.0
+var gun_unlocked := false
+var jump_unlocked := false
+var dash_unlocked := false
+var ammo := 3
+var health := 5
+var invincible := 0.0
+var shot_timer := 0.0
+var aim := Vector2.RIGHT
+var animation := 0.0
+var flash := 0.0
+var active := false
+var mouse_aim := false
+var last_mouse := Vector2.ZERO
 
-## Set by main.gd (the level's current owner - there's no room system
-## yet, so "reset" means level spawn point, not room start per PROMPT.md).
-var spawn_point: Vector2 = Vector2.ZERO
-## Falling below this Y triggers the same reset as pressing R. INF means
-## no kill plane is configured (never triggers).
-var kill_plane_y: float = INF
-
-@onready var _double_jump_indicator: ColorRect = $DoubleJumpIndicator
-@onready var _dash_indicator: ColorRect = $DashIndicator
-@onready var _wall_cling_indicator: ColorRect = $WallClingIndicator
-
-## WallClingIndicator's offsets as authored in player.tscn (the left-edge
-## strip) and their mirror image against the sprite's own offsets
-## (offset_left -5.0 / offset_right 5.0) - swapped onto the right edge
-## when the wall being clung to is on the player's right, so the
-## indicator always shows which side the wall is actually on instead of
-## always defaulting to the left.
-const _WALL_CLING_OFFSET_LEFT := Vector2(-5.0, -3.0)
-const _WALL_CLING_OFFSET_RIGHT := Vector2(3.0, 5.0)
-
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
+	if not active:
+		return
+	animation += delta
+	invincible = maxf(0, invincible - delta)
+	shot_timer = maxf(0, shot_timer - delta)
+	flash = maxf(0, flash - delta)
 	state.move_left = Input.is_action_pressed("move_left")
 	state.move_right = Input.is_action_pressed("move_right")
 	state.look_up = Input.is_action_pressed("look_up")
 	state.look_down = Input.is_action_pressed("look_down")
 	state.jump_pressed = Input.is_action_just_pressed("jump")
 	state.jump_released = Input.is_action_just_released("jump")
-	state.dash_pressed = Input.is_action_just_pressed("dash")
-	state.reset_pressed = Input.is_action_just_pressed("reset") or position.y > kill_plane_y
+	state.dash_pressed = dash_unlocked and Input.is_action_just_pressed("dash")
+	state.reset_pressed = false
+	if Input.is_action_just_pressed("reset") or position.y > kill_plane_y:
+		respawn()
+	if not jump_unlocked:
+		state.double_jump_available = false
+	if not dash_unlocked:
+		state.dash_available = false
+	var grounded := state.on_floor
+	var previous_velocity := state.velocity
 	state.position = position
-
 	PlayerMovement.process(state, config, solid_tiles, spawn_point)
-
 	position = state.position
 	velocity = state.velocity
+	if state.on_floor or state.on_wall_left or state.on_wall_right:
+		ammo = 3
+	if not grounded and state.on_floor and previous_velocity.y > 2:
+		get_parent().burst(position + Vector2(0, 8), Color("91b5a0"), 7)
+	if state.jump_pressed and state.velocity.y < -3:
+		get_parent().sound("jump")
+	if state.dash_pressed and int(state.timers.get("dash_timer", 0)) == config.dash_duration_frames - 1:
+		get_parent().sound("dash")
+	if int(state.timers.get("dash_timer", 0)) > 0:
+		get_parent().burst(position, Color("72ecd3"), 2)
+	var mouse := get_viewport().get_mouse_position()
+	if mouse.distance_to(last_mouse) > 2:
+		mouse_aim = true
+	last_mouse = mouse
+	if Input.is_action_pressed("fire_key") or state.look_down or state.look_up:
+		mouse_aim = false
+	if mouse_aim:
+		aim = (get_global_mouse_position() - position).normalized()
+	else:
+		aim = Vector2(state.facing, 0)
+		if state.look_down:
+			aim = Vector2.DOWN
+		elif state.look_up:
+			aim = Vector2.UP
+	if gun_unlocked and (Input.is_action_pressed("fire") or Input.is_action_pressed("fire_key")):
+		shoot()
+	queue_redraw()
 
-	# Placeholder ability indicators (PROMPT.md milestone 4 tuning
-	# iteration 2, item 4) - purely a display mapping of state that's
-	# already tested elsewhere, decoupled from movement logic and trivial
-	# to remove once real art lands.
-	_double_jump_indicator.visible = state.double_jump_available
-	_dash_indicator.visible = state.dash_available
-	_wall_cling_indicator.visible = state.wall_attached
-	if state.wall_attached:
-		var side_offsets := _WALL_CLING_OFFSET_RIGHT if state.last_wall_side > 0.0 else _WALL_CLING_OFFSET_LEFT
-		_wall_cling_indicator.offset_left = side_offsets.x
-		_wall_cling_indicator.offset_right = side_offsets.y
+func shoot() -> void:
+	if shot_timer > 0 or ammo <= 0:
+		return
+	ammo -= 1
+	shot_timer = 0.19
+	flash = 0.075
+	# Recoil adds velocity without taking away air control.
+	if not state.on_floor:
+		state.velocity -= aim * 2.7
+		if aim.y > 0.45:
+			state.velocity.y = minf(state.velocity.y, -3.6)
+		state.velocity.y = maxf(state.velocity.y, -8.5)
+	get_parent().fire(position + aim * 10, aim)
+	get_parent().sound("shot")
+
+func hurt(from: Vector2) -> void:
+	if invincible > 0 or not active:
+		return
+	health -= 1
+	invincible = 1.3
+	state.velocity = Vector2(signf(position.x - from.x) * 3.5, -3.5)
+	get_parent().shake = 4.0
+	get_parent().burst(position, Color("ff9671"), 14)
+	get_parent().sound("hurt")
+	if health <= 0:
+		respawn()
+
+func respawn() -> void:
+	PlayerMovement._reset(state, spawn_point)
+	position = spawn_point
+	health = 5
+	ammo = 3
+	invincible = 1.5
+	get_parent().on_respawn()
+
+func _draw() -> void:
+	if invincible > 0 and int(invincible * 15) % 2 == 0:
+		return
+	var facing := state.facing
+	if gun_unlocked:
+		facing = -1.0 if aim.x < -0.1 else (1.0 if aim.x > 0.1 else facing)
+	var step := sin(animation * 18) * 2 if state.on_floor and absf(state.velocity.x) > 0.3 else 0.0
+	draw_rect(Rect2(-7 * facing - 2, -3, 4, 9), Color("536c80"))
+	draw_rect(Rect2(-4, -3, 8, 9), Color("bdcbd1"))
+	draw_rect(Rect2(-3, -2, 6, 6), Color("eef0d8"))
+	draw_rect(Rect2(-5, -9, 10, 8), Color("6f8798"))
+	draw_rect(Rect2(-4, -10, 8, 8), Color("e7eddf"))
+	draw_rect(Rect2(-3 + facing, -8, 7, 4), Color("252e42"))
+	draw_rect(Rect2(-2 + facing, -8, 5, 3), Color("e6aa55"))
+	draw_rect(Rect2(-1 + facing, -8, 3, 1), Color("ffdf91"))
+	draw_rect(Rect2(-3, 1, 6, 2), Color("d27853"))
+	draw_rect(Rect2(-4, 5, 3, 3 + step), Color("e1e7d8"))
+	draw_rect(Rect2(1, 5, 3, 3 - step), Color("e1e7d8"))
+	draw_rect(Rect2(-4, 7 + step, 3, 2), Color("44556b"))
+	draw_rect(Rect2(1, 7 - step, 3, 2), Color("44556b"))
+	if gun_unlocked:
+		draw_line(aim * 3, aim * 12, Color("263444"), 5)
+		draw_line(aim * 4 + Vector2(0, -1), aim * 11 + Vector2(0, -1), Color("9bb4b4"), 2)
+		draw_circle(aim * 8, 1.5, Color("80f2d2"))
+		if flash > 0:
+			draw_circle(aim * 15, 4, Color("fff0ac"))

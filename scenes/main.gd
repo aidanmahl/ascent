@@ -1,190 +1,308 @@
 extends Node2D
 
-## Placeholder scaffolding only: the real room/level framework
-## (TileMapLayer-backed) is milestone 7. Builds a movement gym to test
-## tuning against - collision data plus matching colored-rectangle
-## visuals (CLAUDE.md: placeholder art only) - and hands the collision
-## data to the player. The player doesn't build its own world; see
-## player.gd.
-##
-## This is a milestone 4 tuning aid, NOT the sample level from SPEC.md
-## section 9 (that's milestone 10, authored after tuning is signed off).
-## Ugly and functional on purpose: every section exercises one mechanic
-## (or a combo) in isolation so movement feel can be judged section by
-## section, then chains them so nothing needs a restart to reach.
-
-const TILE_SIZE := 16
-## Checkerboard (alternating by col+row parity) instead of a flat color -
-## purely a visual speed reference, per your request; doesn't affect
-## collision at all.
-const TILE_COLOR_A := Color(0.55, 0.4, 0.25)
-const TILE_COLOR_B := Color(0.47, 0.33, 0.2)
-
-## Background checkerboard, coarser than the tile grid (64px cells) so it
-## doesn't need thousands of nodes to cover the whole gym - still a clear
-## motion reference since it doesn't need to align with the tile grid.
-const BG_CELL_SIZE := 64
-const BG_COLOR_A := Color(0.15, 0.15, 0.18)
-const BG_COLOR_B := Color(0.11, 0.11, 0.14)
-## Extra cells of background beyond the level's own bounding box, so it
-## doesn't end abruptly right at the edge of the geometry.
-const BG_MARGIN_CELLS := 4
-
-## No room system yet (milestone 7), so "reset" - R, or falling below
-## KILL_PLANE_Y - means this level spawn point, not a room start.
-const SPAWN_POINT := Vector2(0, 400)
-## Comfortably below every section's floor (lowest is row 30, y=480-496) -
-## the dash-required gap (section B) has no floor under it at all, so
-## missing that dash currently means falling forever without this.
-const KILL_PLANE_Y := 1000.0
-
+const Scenery = preload("res://scenes/scenery.gd")
+const HUD = preload("res://scenes/hud.gd")
+const Audio = preload("res://scenes/sound.gd")
+const START := Vector2(120, 472)
+const SUMMIT := -1504.0
+var tiles: Dictionary = {}
+var platforms: Array[Rect2] = []
+var enemies: Array[Dictionary] = []
+var bullets: Array[Dictionary] = []
+var particles: Array[Dictionary] = []
+var pickups: Array[Dictionary] = []
+var checkpoints: Array[Vector2] = []
+var checkpoint_index := -1
+var elapsed := 0.0
+var time := 0.0
+var shake := 0.0
+var started := false
+var paused := false
+var finished := false
+var muted := false
+var deaths := 0
+var kills := 0
+var message := ""
+var message_time := 0.0
+var camera: Camera2D
+var scenery: Node2D
+var hud: Node2D
+var audio: Node
+var rng := RandomNumberGenerator.new()
 @onready var player: Player = $Player
 
 func _ready() -> void:
-	var solid_tiles := _build_geometry()
-	player.solid_tiles = solid_tiles
-	player.spawn_point = SPAWN_POINT
-	player.kill_plane_y = KILL_PLANE_Y
-	player.position = SPAWN_POINT
-	_spawn_background(solid_tiles)
-	_spawn_visuals(solid_tiles)
+	rng.seed = 8021
+	_setup_input()
+	_build_level()
+	player.solid_tiles = tiles
+	player.spawn_point = START
+	player.position = START
+	scenery = Scenery.new()
+	scenery.world = self
+	scenery.z_index = -10
+	add_child(scenery)
+	camera = Camera2D.new()
+	camera.position = Vector2(320, 324)
+	add_child(camera)
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	hud = HUD.new()
+	hud.world = self
+	layer.add_child(hud)
+	audio = Audio.new()
+	add_child(audio)
 
-## Row numbers decrease upward (Godot's Y-down convention) - the level
-## climbs from floor_row at the bottom toward increasingly negative rows,
-## matching the game's name. Column/row math below is annotated with the
-## approximate pixel sizes it produces (tile_size = 16px) against the
-## default_movement_config.tres values current as of milestone 4 tuning
-## iteration 1: max jump height ~49.5px, idealized max jump distance
-## ~87.5px (already-at-top-speed, the SPEC.md "compute from config" upper
-## bound - a realistic short-run-up jump lands well under this), dash
-## distance ~81.2px (11 frames at 7.0 + 1 retained frame at 4.2).
-##
-## Worth knowing: with the reduced gravity, dash's ~81px range is now
-## SHORTER than jump's idealized ~87.5px max, so a gap that's cleanly
-## "dash-only, not jump-able" doesn't really exist at the theoretical
-## extremes - the dash gap below (80px) is sized to need a confident dash
-## and to be past what a realistic (non-idealized-runup) jump reaches, not
-## to be mathematically jump-proof. Flagging this rather than quietly
-## picking numbers that hide it - if you want a cleaner separation, the
-## lever is dash_speed/dash_duration_frames or air_acceleration, not
-## something this geometry pass should be deciding on its own.
-func _build_geometry() -> Dictionary:
-	var tiles := {}
-	var floor_row := 30
+func _setup_input() -> void:
+	var bindings := {"move_left": [KEY_A, KEY_LEFT], "move_right": [KEY_D, KEY_RIGHT], "look_up": [KEY_W, KEY_UP], "look_down": [KEY_S, KEY_DOWN], "jump": [KEY_SPACE, KEY_Z], "dash": [KEY_SHIFT, KEY_X], "fire_key": [KEY_J, KEY_C], "pause_game": [KEY_ESCAPE, KEY_P], "mute": [KEY_M]}
+	for action: String in bindings:
+		if not InputMap.has_action(action):
+			InputMap.add_action(action)
+		for key: int in bindings[action]:
+			var event := InputEventKey.new()
+			event.physical_keycode = key
+			if not InputMap.action_has_event(action, event):
+				InputMap.action_add_event(action, event)
+	if not InputMap.has_action("fire"):
+		InputMap.add_action("fire")
+		var click := InputEventMouseButton.new()
+		click.button_index = MOUSE_BUTTON_LEFT
+		InputMap.action_add_event("fire", click)
 
-	# --- A: long flat run - top speed and stopping distance ---
-	_fill_rect(tiles, -4, 40, floor_row, floor_row)
-	_fill_rect(tiles, -5, -5, 10, floor_row)  # left boundary wall
+func _unhandled_input(event: InputEvent) -> void:
+	if not started and ((event is InputEventMouseButton and event.pressed) or event.is_action_pressed("jump") or (event is InputEventKey and event.pressed and event.keycode == KEY_ENTER)):
+		started = true
+		player.active = true
+		notify("SURVIVED THE IMPACT.  Find your equipment beside the wreck.", 6)
+		sound("save")
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("pause_game") and started and not finished:
+		paused = not paused
+		player.active = not paused
+	elif event.is_action_pressed("mute"):
+		muted = not muted
+		audio.set_muted(muted)
+	elif finished and event is InputEventKey and event.pressed and event.keycode == KEY_ENTER:
+		get_tree().reload_current_scene()
 
-	# --- B: dash-required gap (cols 41-46 empty, 5 tiles = 80px) ---
-	_fill_rect(tiles, 47, 65, floor_row, floor_row)
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and started and not finished:
+		paused = true
+		player.active = false
 
-	# --- C: overhang / ceiling corridor (same row as B's landing) ---
-	# Low ceiling over cols 52-58 (3 tiles / 48px clearance - blocks a
-	# full jump, passable at a run). Gap in the ceiling at 60-63 leaves
-	# room to jump freely for comparison.
-	_fill_rect(tiles, 52, 58, floor_row - 3, floor_row - 3)
+func _build_level() -> void:
+	_fill(0, 39, 30, 34)
+	_fill(0, 1, -100, 30)
+	_fill(38, 39, -100, 30)
+	# Overlapping switchbacks keep the next landing visible. Later rises
+	# expand from 48 to 80/96 pixels as suit upgrades become available.
+	var route := [Vector2i(13,27), Vector2i(20,24), Vector2i(27,21), Vector2i(23,18), Vector2i(16,15), Vector2i(8,12), Vector2i(4,9), Vector2i(10,6), Vector2i(17,1), Vector2i(24,-4), Vector2i(28,-9), Vector2i(21,-14), Vector2i(13,-19), Vector2i(5,-24), Vector2i(8,-29), Vector2i(16,-34), Vector2i(25,-40), Vector2i(28,-46), Vector2i(20,-52), Vector2i(11,-58), Vector2i(4,-64), Vector2i(11,-70), Vector2i(20,-76), Vector2i(28,-82), Vector2i(21,-88), Vector2i(13,-94)]
+	for i in range(route.size()):
+		var p: Vector2i = route[i]
+		var width := 7 if i < 8 else 6
+		_fill(p.x, p.x + width - 1, p.y, p.y + 1)
+		platforms.append(Rect2(p.x * 16, p.y * 16, width * 16, 32))
+	# Safe rest ledges off the main path, with vertical faces for wall jumps.
+	_fill(2, 5, -8, -7)
+	_fill(34, 37, -28, -27)
+	_fill(2, 5, -48, -47)
+	_fill(34, 37, -68, -67)
+	checkpoints = [Vector2(288,232), Vector2(368,-232), Vector2(352,-840)]
+	pickups = [{"p": Vector2(210,468), "kind": "gun", "taken": false}, {"p": Vector2(192,84), "kind": "jump", "taken": false}, {"p": Vector2(288,-556), "kind": "dash", "taken": false}]
+	for i in [3, 6, 10, 13, 17, 20, 23]:
+		var rect: Rect2 = platforms[i]
+		enemies.append({"p": Vector2(rect.position.x + 40, rect.position.y - 7), "home": Vector2(rect.position.x + 40, rect.position.y - 7), "left": rect.position.x + 10, "right": rect.end.x - 10, "dir": 1.0, "kind": "crawler", "hp": 2, "t": float(i), "hit": 0.0})
+	for i in [9, 12, 16, 19, 22, 24]:
+		var rect: Rect2 = platforms[i]
+		var p := Vector2(rect.position.x - 25, rect.position.y - 38)
+		enemies.append({"p": p, "home": p, "dir": 1.0, "kind": "flyer", "hp": 2, "t": float(i), "hit": 0.0})
 
-	# --- D: floating platforms - double jump only ---
-	# Each step is 4 rows (64px) above the last: clears the ~49.5px
-	# single-jump max, within double-jump reach.
-	_fill_rect(tiles, 66, 68, floor_row, floor_row)
-	_fill_rect(tiles, 69, 71, floor_row - 4, floor_row - 4)
-	_fill_rect(tiles, 72, 74, floor_row - 8, floor_row - 8)
-	_fill_rect(tiles, 75, 77, floor_row - 12, floor_row - 12)
-	_fill_rect(tiles, 78, 80, floor_row - 16, floor_row - 16)
+func _fill(x0: int, x1: int, y0: int, y1: int) -> void:
+	for x in range(x0, x1 + 1):
+		for y in range(y0, y1 + 1):
+			tiles[Vector2i(x,y)] = true
 
-	# --- E: vertical wall-jump shaft ---
-	# 3-tile-wide (48px) shaft, 20 rows (320px) tall, climbed from the
-	# last floating platform (D) via chained wall jumps.
-	var shaft_top := floor_row - 16 - 20
-	_fill_rect(tiles, 82, 82, shaft_top, floor_row - 16)
-	_fill_rect(tiles, 86, 86, shaft_top, floor_row - 16)
-	var landing_row := shaft_top - 1
-	_fill_rect(tiles, 86, 90, landing_row, landing_row)  # landing at the top
+func _physics_process(delta: float) -> void:
+	time += delta
+	if started and not paused and not finished:
+		elapsed += delta
+		message_time = maxf(0, message_time - delta)
+		_update_pickups()
+		_update_enemies(delta)
+		_update_bullets(delta)
+		if player.position.y < -1470 and player.position.distance_to(Vector2(256,-1515)) < 45:
+			finished = true
+			player.active = false
+			sound("save")
+			burst(player.position, Color("ffe3a1"), 45)
+	for i in range(particles.size() - 1, -1, -1):
+		var p: Dictionary = particles[i]
+		p.life -= delta
+		p.p += p.v * delta
+		p.v.y += 80 * delta
+		if p.life <= 0:
+			particles.remove_at(i)
+	var target := Vector2(320, clampf(player.position.y - 48, -1500, 324))
+	if not started:
+		target = Vector2(320,324)
+	camera.position = camera.position.lerp(target, 1.0 - exp(-delta * 7))
+	shake = maxf(shake - delta * 15, 0)
+	camera.offset = Vector2(rng.randf_range(-shake,shake), rng.randf_range(-shake,shake))
+	scenery.queue_redraw()
+	hud.queue_redraw()
+	queue_redraw()
 
-	# --- G: dash+jump gap ---
-	# 9 tiles (144px) at cols 91-99, flat, well beyond either dash or
-	# jump alone: needs the exit-retention momentum from a dash carried
-	# into a jump (or vice versa) to cross. Landing continues to col 111
-	# so there's room to walk up to section F without a running start.
-	_fill_rect(tiles, 100, 111, landing_row, landing_row)
+func _update_pickups() -> void:
+	for pickup: Dictionary in pickups:
+		if pickup.taken or player.position.distance_to(pickup.p) > 23:
+			continue
+		pickup.taken = true
+		match pickup.kind:
+			"gun":
+				player.gun_unlocked = true
+				notify("PULSE TOOL RECOVERED  /  Aim + click, or J. Fire DOWN in midair to rise.", 9)
+			"jump":
+				player.jump_unlocked = true
+				player.state.double_jump_available = true
+				notify("AIR JUMP ONLINE  /  Press SPACE again in the air. Reach the hanging gardens.", 8)
+			"dash":
+				player.dash_unlocked = true
+				player.state.dash_available = true
+				notify("VECTOR DRIVE ONLINE  /  Hold a direction + SHIFT to dash. The sky is close.", 8)
+		player.health = 5
+		burst(pickup.p, Color("80f2d2"), 30)
+		sound("save")
+	for i in range(checkpoints.size()):
+		if i > checkpoint_index and player.position.distance_to(checkpoints[i]) < 25:
+			checkpoint_index = i
+			player.spawn_point = checkpoints[i]
+			player.health = 5
+			notify("SIGNAL ANCHOR LINKED  /  Health restored. Your climb resumes here.", 5)
+			burst(checkpoints[i], Color("80f2d2"), 20)
+			sound("save")
 
-	# --- F: wall-to-wall climbing at varying widths ---
-	# Two dead-end shafts branching up from the G landing, narrower and
-	# wider than E's 3 tiles - each capped with a small platform; falling
-	# back off either (no fall damage) returns to the G landing below.
-	var f_wall_bottom := landing_row - 1
-	var f_wall_top := f_wall_bottom - 11
-	var f_cap := f_wall_top - 1
-
-	_fill_rect(tiles, 112, 112, f_wall_top, f_wall_bottom)  # 2-tile gap (32px)
-	_fill_rect(tiles, 115, 115, f_wall_top, f_wall_bottom)
-	_fill_rect(tiles, 112, 115, f_cap, f_cap)
-
-	_fill_rect(tiles, 119, 119, f_wall_top, f_wall_bottom)  # 4-tile gap (64px)
-	_fill_rect(tiles, 124, 124, f_wall_top, f_wall_bottom)
-	_fill_rect(tiles, 119, 124, f_cap, f_cap)
-
-	return tiles
-
-func _fill_rect(tiles: Dictionary, col0: int, col1: int, row0: int, row1: int) -> void:
-	for col in range(col0, col1 + 1):
-		for row in range(row0, row1 + 1):
-			tiles[Vector2i(col, row)] = true
-
-## Added to the tree before _spawn_visuals's tiles, so it draws behind
-## them (Node2D children draw in sibling order). Covers the level's own
-## bounding box plus BG_MARGIN_CELLS on every side.
-func _spawn_background(tiles: Dictionary) -> void:
-	if tiles.is_empty():
-		return
-	var min_col := 0
-	var max_col := 0
-	var min_row := 0
-	var max_row := 0
-	var first := true
-	for coord: Vector2i in tiles:
-		if first:
-			min_col = coord.x
-			max_col = coord.x
-			min_row = coord.y
-			max_row = coord.y
-			first = false
+func _update_enemies(delta: float) -> void:
+	for e: Dictionary in enemies:
+		if e.hp <= 0:
+			continue
+		e.t += delta
+		e.hit = maxf(0, e.hit - delta)
+		if e.kind == "crawler":
+			e.p.x += e.dir * 27 * delta
+			if e.p.x < e.left or e.p.x > e.right:
+				e.dir *= -1
+				e.p.x = clampf(e.p.x, e.left, e.right)
 		else:
-			min_col = mini(min_col, coord.x)
-			max_col = maxi(max_col, coord.x)
-			min_row = mini(min_row, coord.y)
-			max_row = maxi(max_row, coord.y)
+			var home: Vector2 = e.home
+			var target := home + Vector2(sin(e.t * 1.5) * 34, cos(e.t * 2) * 16)
+			if player.position.distance_to(home) < 115:
+				target = player.position + Vector2(0,-4)
+			e.p = e.p.move_toward(target, delta * 38)
+		if player.position.distance_to(e.p) < 15:
+			player.hurt(e.p)
 
-	var min_x := min_col * TILE_SIZE
-	var max_x := (max_col + 1) * TILE_SIZE
-	var min_y := min_row * TILE_SIZE
-	var max_y := (max_row + 1) * TILE_SIZE
+func fire(p: Vector2, direction: Vector2) -> void:
+	bullets.append({"p": p, "v": direction * 520, "life": 0.8})
+	burst(p, Color("ffe6a3"), 4)
+	shake = maxf(shake, 0.8)
 
-	var col_start := floori(float(min_x) / BG_CELL_SIZE) - BG_MARGIN_CELLS
-	var col_end := ceili(float(max_x) / BG_CELL_SIZE) + BG_MARGIN_CELLS
-	var row_start := floori(float(min_y) / BG_CELL_SIZE) - BG_MARGIN_CELLS
-	var row_end := ceili(float(max_y) / BG_CELL_SIZE) + BG_MARGIN_CELLS
+func _update_bullets(delta: float) -> void:
+	for i in range(bullets.size() - 1, -1, -1):
+		var b: Dictionary = bullets[i]
+		b.life -= delta
+		# Substeps prevent fast projectiles skipping thin collision or enemies.
+		for step in range(3):
+			b.p += b.v * delta / 3.0
+			if tiles.has(Vector2i(floori(b.p.x / 16), floori(b.p.y / 16))):
+				b.life = 0
+				burst(b.p, Color("efbd78"), 5)
+				break
+			for e: Dictionary in enemies:
+				if e.hp > 0 and b.p.distance_to(e.p) < 12:
+					e.hp -= 1
+					e.hit = 0.15
+					b.life = 0
+					burst(e.p, Color("e9a878"), 8)
+					if e.hp <= 0:
+						kills += 1
+						burst(e.p, Color("d294ba"), 16)
+						sound("kill")
+					break
+			if b.life <= 0:
+				break
+		if b.life <= 0:
+			bullets.remove_at(i)
 
-	for col in range(col_start, col_end):
-		for row in range(row_start, row_end):
-			var rect := ColorRect.new()
-			rect.color = BG_COLOR_A if (col + row) % 2 == 0 else BG_COLOR_B
-			rect.size = Vector2(BG_CELL_SIZE, BG_CELL_SIZE)
-			rect.position = Vector2(col * BG_CELL_SIZE, row * BG_CELL_SIZE)
-			# Behind everything - sibling order alone isn't enough once
-			# this covers the whole frame instead of leaving empty space,
-			# it would otherwise draw over the player (added earlier in
-			# main.tscn, but add_child() here appends after it).
-			rect.z_index = -2
-			add_child(rect)
+func burst(p: Vector2, color: Color, count: int) -> void:
+	for i in range(count):
+		particles.append({"p": p, "v": Vector2(rng.randf_range(-45,45), rng.randf_range(-55,15)), "color": color, "life": rng.randf_range(0.15,0.6)})
 
-func _spawn_visuals(tiles: Dictionary) -> void:
-	for coord: Vector2i in tiles:
-		var rect := ColorRect.new()
-		rect.color = TILE_COLOR_A if (coord.x + coord.y) % 2 == 0 else TILE_COLOR_B
-		rect.size = Vector2(TILE_SIZE, TILE_SIZE)
-		rect.position = Vector2(coord.x * TILE_SIZE, coord.y * TILE_SIZE)
-		rect.z_index = -1  # above the background, still behind the player
-		add_child(rect)
+func notify(text: String, duration: float) -> void:
+	message = text
+	message_time = duration
+
+func on_respawn() -> void:
+	deaths += 1
+	bullets.clear()
+	camera.position = Vector2(320,clampf(player.position.y - 48,-1500,324))
+	notify("SUIT RECONSTRUCTED  /  Equipment retained. Keep climbing.", 4)
+
+func sound(kind: String) -> void:
+	if audio and not muted:
+		audio.play_effect(kind)
+
+func zone() -> String:
+	if player.position.y > 100:
+		return "01 / THE IMPACT HOLLOW"
+	if player.position.y > -570:
+		return "02 / LUMEN GROTTO"
+	if player.position.y > -1050:
+		return "03 / THE HANGING GARDENS"
+	return "04 / FIRST LIGHT"
+
+func _draw() -> void:
+	for checkpoint in checkpoints:
+		var lit := checkpoints.find(checkpoint) <= checkpoint_index
+		draw_rect(Rect2(checkpoint + Vector2(-6,-18),Vector2(12,26)),Color("354e59"))
+		draw_rect(Rect2(checkpoint + Vector2(-3,-16),Vector2(6,18)),Color("78eac5") if lit else Color("587b80"))
+		draw_circle(checkpoint + Vector2(0,-20),3,Color("c5ffe3") if lit else Color("9caeaa"))
+	for pickup: Dictionary in pickups:
+		if pickup.taken:
+			continue
+		var p: Vector2 = pickup.p + Vector2(0,sin(time * 3) * 3)
+		draw_circle(p, 17, Color(0.4,0.95,0.8,0.07))
+		draw_arc(p, 12, time, time + 4.5, 12, Color("5c9a96"),1)
+		draw_colored_polygon(PackedVector2Array([p+Vector2(0,-7),p+Vector2(7,0),p+Vector2(0,7),p+Vector2(-7,0)]),Color("81efcd"))
+		draw_rect(Rect2(p-Vector2(2,3),Vector2(4,6)),Color("f7f5c3"))
+	for e: Dictionary in enemies:
+		if e.hp <= 0:
+			continue
+		var p: Vector2 = e.p.round()
+		var color := Color("eaa489") if e.hit > 0 else Color("a86d8e")
+		if e.kind == "crawler":
+			for n in range(3):
+				var x := -7 + n * 6
+				draw_line(p+Vector2(x,2),p+Vector2(x+sin(e.t*12+n)*3,7),Color("57495f"),2)
+			draw_rect(Rect2(p+Vector2(-9,-4),Vector2(18,8)),Color("54445f"))
+			draw_rect(Rect2(p+Vector2(-7,-7),Vector2(14,8)),color)
+			draw_rect(Rect2(p+Vector2(-4,-8),Vector2(8,3)),Color("c792a5"))
+			draw_rect(Rect2(p+Vector2(e.dir*5-1,-3),Vector2(3,2)),Color("ffe8a3"))
+		else:
+			var wing := sin(e.t * 20) * 6
+			draw_colored_polygon(PackedVector2Array([p+Vector2(-3,0),p+Vector2(-17,-8+wing),p+Vector2(-12,5),p+Vector2(0,5)]),color)
+			draw_colored_polygon(PackedVector2Array([p+Vector2(3,0),p+Vector2(17,-8+wing),p+Vector2(12,5),p+Vector2(0,5)]),color)
+			draw_rect(Rect2(p+Vector2(-4,-5),Vector2(8,11)),Color("474960"))
+			draw_rect(Rect2(p+Vector2(-3,-3),Vector2(6,2)),Color("ffcc84"))
+	for b: Dictionary in bullets:
+		draw_line(b.p - b.v.normalized() * 9, b.p, Color("fff0b1"),2)
+	for p: Dictionary in particles:
+		var color: Color = p.color
+		color.a = minf(1,p.life * 4)
+		draw_rect(Rect2(p.p.round(),Vector2(2,2)),color)
+	# Rescue transmitter on the final island.
+	draw_rect(Rect2(253,-1550,6,46),Color("afc5bf"))
+	draw_rect(Rect2(244,-1510,24,6),Color("637f80"))
+	draw_circle(Vector2(256,-1551),4,Color("ffdf98"))
+	for i in range(3):
+		var radius := fmod(time * 18 + i * 14,42)
+		draw_arc(Vector2(256,-1551),radius,PI,TAU,24,Color(0.7,1,0.85,(1-radius/42)*0.45),1)
