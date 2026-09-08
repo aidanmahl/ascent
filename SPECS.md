@@ -1,3 +1,5 @@
+> Current expedition design: [DESIGN.md](DESIGN.md). The recoil progression revision supersedes the historical double-jump, unlimited-ammo, wall-refill, and instant-death rules below. The original movement specification remains as regression history.
+
 # SPEC.md — 2D Precision Platformer
 
 Read this alongside `CLAUDE.md`. `CLAUDE.md` governs *how* you work.

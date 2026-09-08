@@ -63,6 +63,7 @@ static func _reset(state: MovementState, spawn_position: Vector2) -> void:
 	state.facing = 1.0
 	state.last_wall_side = 0.0
 	state.wall_attached = false
+	state.wall_kick_available = true
 	state.timers.clear()
 
 ## wall_detach tracks frames since _touched_wall_with_momentum was last
@@ -123,6 +124,10 @@ static func _reset(state: MovementState, spawn_position: Vector2) -> void:
 ## horizontal momentum is actually introduced, by a press or otherwise -
 ## exactly the boundary the request asked to keep intact.
 static func _update_wall_attachment(state: MovementState, config: MovementConfig, solid_tiles: Dictionary) -> void:
+	if not state.wall_jump_enabled:
+		state.wall_attached = false
+		state.timers["wall_detach"] = config.wall_detach_grace + 1
+		return
 	var touched_with_momentum := _touched_wall_with_momentum(state)
 	var wall_detach: int = state.timers.get("wall_detach", config.wall_detach_grace + 1)
 	var wall_side := _current_wall_side(state)
@@ -190,8 +195,8 @@ static func _apply_jump(state: MovementState, config: MovementConfig, dash_just_
 
 	var touching_wall := state.on_wall_left or state.on_wall_right
 	var can_ground_jump := state.on_floor or coyote > 0
-	var can_wall_jump := (touching_wall or wall_coyote > 0 or state.wall_attached) and not state.on_floor
-	var can_double_jump := (not state.on_floor) and (not can_wall_jump) and state.double_jump_available
+	var can_wall_jump := state.wall_jump_enabled and state.wall_kick_available and (touching_wall or wall_coyote > 0 or state.wall_attached) and not state.on_floor
+	var can_double_jump := state.double_jump_enabled and (not state.on_floor) and (not can_wall_jump) and state.double_jump_available
 	# Movement feel overhaul rule 4d: a jump can fire immediately after a
 	# dash, but not on the exact same frame the dash starts. Gated only
 	# here (not by skipping this function, and not by touching
@@ -209,6 +214,8 @@ static func _apply_jump(state: MovementState, config: MovementConfig, dash_just_
 		state.velocity.y = config.jump_velocity
 	elif fires_wall:
 		_fire_wall_jump(state, config)
+		if state.ground_refill_only:
+			state.wall_kick_available = false
 	elif fires_double:
 		_fire_double_jump(state, config)
 		state.double_jump_available = false
@@ -549,7 +556,7 @@ static func _update_dash(state: MovementState, config: MovementConfig) -> bool:
 	var ending := cancelled_by_wall or dash_timer <= 0
 
 	if ending:
-		if cancelled_by_wall:
+		if cancelled_by_wall and not state.ground_refill_only:
 			state.dash_available = true
 		dash_timer = 0
 		dash_cooldown = config.dash_cooldown_frames
@@ -580,9 +587,11 @@ static func _dash_direction(state: MovementState) -> Vector2:
 ## stale values - this runs after _resolve_collision, so there's no
 ## staleness here).
 static func _refill_abilities(state: MovementState) -> void:
-	if state.on_floor or state.on_wall_left or state.on_wall_right:
-		state.double_jump_available = true
+	if state.on_floor or (not state.ground_refill_only and (state.on_wall_left or state.on_wall_right)):
+		state.double_jump_available = state.double_jump_enabled
 		state.dash_available = true
+	if state.on_floor:
+		state.wall_kick_available = true
 
 static func _resolve_collision(state: MovementState, config: MovementConfig, solid_tiles: Dictionary) -> void:
 	var result := TileCollision.resolve(state.position, state.velocity, config.collider_size, solid_tiles, config.tile_size, config.collision_width_margin_px)

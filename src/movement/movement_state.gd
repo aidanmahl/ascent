@@ -55,6 +55,11 @@ var last_wall_side: float = 0.0
 ## wall_detach.
 var wall_attached: bool = false
 
+# Live expedition rules; defaults preserve the historical movement baseline.
+var wall_jump_enabled := true
+var double_jump_enabled := true
+var ground_refill_only := false
+var wall_kick_available := true
 var timers: Dictionary = {}
 
 func clone() -> MovementState:
@@ -79,5 +84,9 @@ func clone() -> MovementState:
 	copy.facing = facing
 	copy.last_wall_side = last_wall_side
 	copy.wall_attached = wall_attached
+	copy.wall_jump_enabled = wall_jump_enabled
+	copy.double_jump_enabled = double_jump_enabled
+	copy.ground_refill_only = ground_refill_only
+	copy.wall_kick_available = wall_kick_available
 	copy.timers = timers.duplicate()
 	return copy

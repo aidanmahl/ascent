@@ -8,14 +8,14 @@ var rng := RandomNumberGenerator.new()
 
 func _ready() -> void:
 	rng.seed = 4207
-	for i in range(130):
-		stars.append(Vector3(rng.randf_range(25,615),rng.randf_range(-1800,550),rng.randf_range(1,3)))
+	for i in range(260):
+		stars.append(Vector3(rng.randf_range(25,615),rng.randf_range(-4300,550),rng.randf_range(1,3)))
 	for coord: Vector2i in world.tiles:
 		if not world.tiles.has(coord + Vector2i.UP) and coord.x > 1 and coord.x < 38:
 			decorations.append({"p": Vector2(coord * 16), "kind": rng.randi_range(0,7), "n": rng.randi_range(3,9)})
-	for i in range(65):
+	for i in range(130):
 		var x := rng.randf_range(0,640)
-		var y := rng.randf_range(-1700,500)
+		var y := rng.randf_range(-4300,500)
 		var w := rng.randf_range(25,100)
 		var h := rng.randf_range(45,150)
 		rock_shapes.append(PackedVector2Array([Vector2(x,y),Vector2(x+w*0.2,y-h*0.8),Vector2(x+w*0.65,y-h),Vector2(x+w,y-h*0.3),Vector2(x+w,y+30)]))
@@ -26,7 +26,7 @@ func _draw() -> void:
 	var bottom := cy + 190
 	# Stepped palette transitions from ink-blue caves to pale morning sky.
 	for y in range(int(top/16)*16-16,int(bottom)+32,16):
-		var daylight := clampf((-float(y)-800)/850,0,1)
+		var daylight := clampf((-float(y)-2400)/1750,0,1)
 		var c := Color("101e2c").lerp(Color("7aa5ac"),daylight)
 		draw_rect(Rect2(-10,y,660,16),c)
 	# Distant walls move more slowly than the foreground.
@@ -35,8 +35,8 @@ func _draw() -> void:
 		for p in shape:
 			shifted.append(Vector2(p.x,(p.y-cy)*0.75+cy))
 		if shifted[0].y > top-40 and shifted[2].y < bottom+130:
-			draw_colored_polygon(shifted,Color("203443") if cy > -900 else Color("557e8b"))
-	if cy < -900:
+			draw_colored_polygon(shifted,Color("203443") if cy > -2700 else Color("557e8b"))
+	if cy < -2700:
 		_draw_surface(cy)
 	for star in stars:
 		var y := (star.y-cy)*0.9+cy
@@ -56,7 +56,7 @@ func _draw() -> void:
 			continue
 		var n := posmod(coord.x * 71 + coord.y * 31, 7)
 		var is_top: bool = not world.tiles.has(coord+Vector2i.UP)
-		var surface := coord.y < -57
+		var surface := coord.y < -165
 		var base := Color("34404e") if not surface else Color("48565a")
 		base = base.lightened(n * 0.012)
 		draw_rect(Rect2(p,Vector2(16,16)),base)
@@ -79,7 +79,7 @@ func _draw() -> void:
 			continue
 		if decor.kind < 3:
 			_draw_grass(p,decor.n)
-		elif decor.kind < 5 and p.y > -950:
+		elif decor.kind < 5 and p.y > -2600:
 			_draw_mushroom(p+Vector2(8,0),decor.n)
 		elif decor.kind == 5:
 			_draw_crystal(p+Vector2(7,0),decor.n)
@@ -93,11 +93,21 @@ func _draw() -> void:
 			draw_colored_polygon(PackedVector2Array([Vector2(x,y-80),Vector2(x+43,y-80),Vector2(x+25,y+float(i%3)*16)]),Color("172c39"))
 		_draw_ship()
 		_world_text(Vector2(79,435),"VESSEL 07 / NO SIGNAL",Color("8ca4a6"),8)
-		_world_text(Vector2(214,455),"PULSE TOOL",Color("a9d6c1"),8)
-	if top < 80 and bottom > 40:
-		_world_text(Vector2(170,51),"SUIT MODULE / AIR JUMP",Color("a9d6c1"),8)
-	if top < -560 and bottom > -600:
-		_world_text(Vector2(251,-590),"SUIT MODULE / VECTOR DRIVE",Color("a9d6c1"),8)
+
+	# Upper-canopy foliage, distant rain and hanging fronds.
+	if cy < -2200:
+		for i in range(20):
+			var x := float(posmod(i*137,640))
+			var y := top+fposmod(world.time*85+i*47,390)
+			draw_line(Vector2(x,y),Vector2(x-3,y+9),Color(0.7,0.88,0.8,0.16),1)
+	for decor in decorations:
+		var p: Vector2 = decor.p
+		if p.y > top and p.y < bottom and int(decor.kind) == 7:
+			for i in range(5):
+				var stem := p+Vector2(8,-i*4)
+				draw_line(p+Vector2(8,0),stem,Color("668f7b"),1)
+				draw_line(stem,stem+Vector2(-10+i,-5),Color("659e7c"),2)
+				draw_line(stem,stem+Vector2(10-i,-5),Color("83b18c"),2)
 	# Small environmental route arrows, pointing toward the next ledge.
 	for index in range(world.platforms.size()-1):
 		var r: Rect2 = world.platforms[index]
