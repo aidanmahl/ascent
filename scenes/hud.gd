@@ -12,6 +12,16 @@ func panel(rect: Rect2) -> void:
 	draw_rect(rect,Color("38525a"),false,1)
 
 func _draw() -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN if world.started and not world.paused and not world.finished else Input.MOUSE_MODE_VISIBLE
+	if world.started and not world.paused and not world.finished:
+		var cursor := get_global_mouse_position()
+		var ready: bool = world.player.ammo > 0 and world.player.shot_timer <= 0
+		var tint := MINT if ready else Color("e2a078")
+		draw_arc(cursor,5,0,TAU,16,INK,3)
+		draw_arc(cursor,5,0,TAU,16,tint,1)
+		for direction in [Vector2.UP,Vector2.DOWN,Vector2.LEFT,Vector2.RIGHT]:
+			draw_line(cursor+direction*8,cursor+direction*11,tint,1)
+		draw_circle(cursor,1,CREAM)
 	if not world.started:
 		_title()
 		return

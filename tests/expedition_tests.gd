@@ -73,9 +73,15 @@ func run() -> void:
 	route.append_array(w.platforms)
 	for i in range(route.size()-1):
 		var cells := 0 if i < 5 else (1 if i < 12 else (2 if i < 30 else 3))
+		if i == 19:
+			var launch := Rect2(256,-1008,160,16)
+			check(reach(route[i],launch,2,false,true) and reach(launch,route[i+1],2,false,true),"boot chimney via its lower landing is reachable")
+			check(not reach(launch,route[i+1],2,false,false),"boot chimney upper transfer requires a kick")
+			continue
 		check(reach(route[i],route[i+1],cells,i>=24,i>=19),"route %02d with %d cells / dash %s / boots %s" % [i+1,cells,i>=24,i>=19])
 	check(not reach(route[6],route[7],0,false,false),"first recoil shaft cannot be cleared without the gun")
 	check(not reach(route[12],route[13],1,false,false),"two-cell hollow cannot be cleared with one cell")
+	check(not reach(route[19],route[20],2,false,false),"boot chimney requires a wall kick even with both recoil cells")
 	check(w.gates.filter(func(g: Dictionary) -> bool: return g.lock == "warden").size() > 0,"upper hollow is sealed until the second magazine guardian is defeated")
 	check(w.gates.filter(func(g: Dictionary) -> bool: return g.lock == "boots").size() > 0,"wall transfer is sealed until kick boots are earned")
 	check(not reach(route[24],route[25],3,false,true),"membrane route requires dash even with all three cells")
@@ -216,5 +222,70 @@ func run() -> void:
 	w.hostile.append({"p":p.position,"v":Vector2.ZERO,"life":2.0})
 	w._update_hostile(1.0/60)
 	check(w.hostile.is_empty() and p.health == 3,"lethal bullet safely clears an entire volley during recovery")
+	# Exercise the live input path: W is dash direction, mouse fire retains aim.
+	p.position = Vector2(120,472)
+	PlayerMovement._reset(p.state,p.position)
+	p.state.on_floor = true
+	p.active = true
+	p.max_ammo = 1
+	p.ammo = 1
+	p.shot_timer = 0
+	w.bullets.clear()
+	Input.action_press("look_up")
+	Input.action_press("fire")
+	p._physics_process(1.0/60)
+	var mouse_direction := (p.get_global_mouse_position()-p.position).normalized()
+	check(p.aim.is_equal_approx(mouse_direction),"mouse fire ignores held vertical dash input")
+	Input.action_release("look_up")
+	for frame in range(180):
+		p._physics_process(1.0/60)
+	Input.action_release("fire")
+	check(w.bullets.size() <= 5,"three seconds of grounded fire is limited by recharge and shot cadence")
+	Input.action_press("look_down")
+	Input.action_press("fire_key")
+	p._physics_process(1.0/60)
+	check(p.aim == Vector2.DOWN,"keyboard downward recoil shortcut remains available")
+	Input.action_release("fire_key")
+	p._physics_process(1.0/60)
+	check(p.aim.is_equal_approx((p.get_global_mouse_position()-p.position).normalized()),"mouse aim resumes without cursor movement when keyboard fire ends")
+	Input.action_release("look_down")
+	check(w.arenas.rooms.size() == 4,"four separate boss chambers are built")
+	for room: Dictionary in w.arenas.rooms:
+		w.arenas.active_room = room
+		p.position = room.spawn
+		w.arenas.attacks.clear()
+		w.hostile.clear()
+		for e: Dictionary in w.enemies:
+			if e.id != room.id:
+				continue
+			e.hp = e.max_hp
+			for volley in range(4):
+				if volley == 2:
+					e.hp = e.max_hp/2
+				e.cooldown = 0
+				w.arenas.tick_boss(e,1.0/60)
+			check(not w.arenas.attacks.is_empty(),room.id+" produces telegraphed arena hazards")
+			check(not w.hostile.is_empty(),room.id+" produces projectile patterns")
+			check(e.p.x > 640,room.id+" stays in its separate room")
+	w.arenas.reset()
+	for room: Dictionary in w.arenas.rooms:
+		var progress_gates: Array = w.gates.filter(func(g: Dictionary) -> bool: return g.lock == room.id)
+		check(not progress_gates.is_empty() and progress_gates[0].rect.position.y < room.door.y-16,room.id+" entrance is below its progress seal")
+	var entry: Dictionary = w.arenas.rooms[0]
+	p.position = entry.door
+	w.arenas.enter_room(entry)
+	check(p.position == entry.spawn and w.arenas.active_room.id == "warden","entering chamber sets player and arena camera")
+	w.locks.warden = true
+	w.arenas.leave_room()
+	check(p.position == entry.door and w.arenas.active_room.is_empty(),"return to the climb after a boss victory")
+	w.locks.erase("warden")
+	p.position = entry.door
+	w.arenas.enter_room(entry)
+	w.arenas.leave_room()
+	check(not w.arenas.active_room.is_empty(),"unfinished encounter seals the arena exit")
+	p.respawn()
+	check(p.position == entry.door and w.arenas.active_room.is_empty(),"arena death returns to its entrance for a quick retry")
+	w.wall_kicked(Vector2(440,-1840))
+	check(w.locks.get("kick_latch",false),"wall kick releases the second traversal latch")
 	w.free()
 	quit(1 if failures else 0)

@@ -16,9 +16,10 @@ const ROUTE := [
 	Vector3i(8,-20,7), Vector3i(21,-27,7), Vector3i(8,-34,7),
 	Vector3i(21,-41,7), Vector3i(8,-48,7), Vector3i(21,-55,7),
 	Vector3i(8,-60,8),
-	# Boot section: short, wide transfers around one 35.7 px wall kick.
-	Vector3i(18,-65,7), Vector3i(10,-70,7), Vector3i(18,-75,7),
-	Vector3i(10,-80,7), Vector3i(18,-85,8),
+	# Boot chimney: use the seal's landing, recoil up the wall, then kick
+	# onto the high shelf. Short transfers follow the tall climb.
+	Vector3i(18,-78,7), Vector3i(10,-80,7), Vector3i(18,-82,7),
+	Vector3i(10,-84,7), Vector3i(18,-85,8),
 	# Dash section: 112 px rises, below the measured 160.9 px jump-dash.
 	Vector3i(8,-92,7), Vector3i(20,-99,7), Vector3i(8,-106,7),
 	Vector3i(20,-113,8), Vector3i(8,-120,7), Vector3i(20,-127,8),
@@ -45,16 +46,25 @@ static func build(w: Node2D) -> void:
 		var tile_height := 1 if i < 5 else 2
 		w._fill(p.x,p.x+p.z-1,p.y,p.y+tile_height-1)
 		w.platforms.append(Rect2(p.x*16,p.y*16,p.z*16,tile_height*16))
-	# Solid wall used once the boot challenge is complete. It is deliberately
-	# only 32 px above its launch shelf so the 35.7 px kick has landing margin.
-	w._fill(26,26,-72,-65)
+	# Tall kick chimney, followed later by a kick-operated mechanical latch.
+	w._fill(26,26,-80,-60)
+	w._fill(28,28,-119,-113)
+	w.kick_plates.append({"p":Vector2(448,-1840),"lock":"kick_latch"})
+	_barrier(w,-118,14,27,"seal","kick_latch")
 	_barrier(w,-14,18,25,"seal","warden")
 	_barrier(w,-63,8,15,"seal","boots")
 	_barrier(w,-88,18,25,"phase","")
+	_barrier(w,-97,14,27,"phase","")
+	_barrier(w,-111,12,25,"phase","")
+	_barrier(w,-125,14,27,"phase","")
 	_barrier(w,-132,17,24,"seal","reservoir")
 	_barrier(w,-153,23,30,"seal","airlock")
 	_barrier(w,-213,17,24,"phase","")
-	_barrier(w,-244,14,27,"seal","crown")
+	_barrier(w,-183,14,27,"phase","")
+	_barrier(w,-233,14,27,"phase","")
+	_barrier(w,-90,18,25,"seal","sentinel")
+	# The Crown chamber entrance must be below its progress seal.
+	_barrier(w,-251,14,27,"seal","crown")
 	w.checkpoints.assign([
 		_point(w,4), _point(w,8), _point(w,11), _point(w,15),
 		_point(w,18), _point(w,23), _point(w,27), _point(w,29),

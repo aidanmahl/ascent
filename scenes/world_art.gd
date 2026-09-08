@@ -3,6 +3,12 @@ var world: Node2D
 const MINT := Color("8ee4c3")
 
 func _draw() -> void:
+	if not world.kick_plates.is_empty():
+		draw_string(ThemeDB.fallback_font,Vector2(275,-1040),"RECOIL UP / KICK OFF THE WALL",HORIZONTAL_ALIGNMENT_LEFT,-1,9,Color("cba8ef"))
+	for plate: Dictionary in world.kick_plates:
+		var color := MINT if world.locks.get(plate.lock,false) else Color("cba8ef")
+		draw_rect(Rect2(plate.p-Vector2(3,16),Vector2(6,32)),color)
+		draw_string(ThemeDB.fallback_font,plate.p+Vector2(-128,-21),"WALL KICK / RELEASE LATCH",HORIZONTAL_ALIGNMENT_LEFT,-1,9,color)
 	var top: float = world.camera.position.y-200
 	var bottom: float = world.camera.position.y+200
 	for gate: Dictionary in world.gates:

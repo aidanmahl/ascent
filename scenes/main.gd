@@ -14,6 +14,7 @@ var hostile: Array[Dictionary] = []
 var hazards: Array[Dictionary] = []
 var gates: Array[Dictionary] = []
 var switches: Array[Dictionary] = []
+var kick_plates: Array[Dictionary] = []
 var locks: Dictionary = {}
 var capacitor: Dictionary = {}
 var signs: Array = []
@@ -40,6 +41,7 @@ var camera: Camera2D
 var scenery: Node2D
 var hud: Node2D
 var audio: Node
+var arenas: Node2D
 var rng := RandomNumberGenerator.new()
 @onready var player: Player = $Player
 @export_category("Level Authoring")
@@ -59,6 +61,11 @@ func _ready() -> void:
 	camera = Camera2D.new()
 	camera.position = Vector2(320, 324)
 	add_child(camera)
+	arenas = preload("res://scenes/boss_arenas.gd").new()
+	arenas.world = self
+	add_child(arenas)
+	if not platforms.is_empty() and not enemies.filter(func(e: Dictionary) -> bool: return e.id == "warden").is_empty():
+		arenas.build()
 	var art := preload("res://scenes/world_art.gd").new()
 	art.world = self
 	art.z_index = 2
@@ -72,6 +79,11 @@ func _ready() -> void:
 	add_child(audio)
 
 func _setup_input() -> void:
+	if not InputMap.has_action("interact"):
+		InputMap.add_action("interact")
+		var interact := InputEventKey.new()
+		interact.physical_keycode = KEY_E
+		InputMap.action_add_event("interact",interact)
 	var bindings := {"move_left": [KEY_A, KEY_LEFT], "move_right": [KEY_D, KEY_RIGHT], "look_up": [KEY_W, KEY_UP], "look_down": [KEY_S, KEY_DOWN], "jump": [KEY_SPACE, KEY_Z], "dash": [KEY_SHIFT, KEY_X], "fire_key": [KEY_J, KEY_C], "pause_game": [KEY_ESCAPE, KEY_P], "mute": [KEY_M]}
 	for action: String in bindings:
 		if not InputMap.has_action(action):
@@ -126,6 +138,7 @@ func _physics_process(delta: float) -> void:
 		combat_time += delta
 		message_time = maxf(0, message_time - delta)
 		_update_pickups()
+		arenas.update(delta)
 		_update_enemies(delta)
 		_update_bullets(delta)
 		_update_hostile(delta)
@@ -144,6 +157,8 @@ func _physics_process(delta: float) -> void:
 		if p.life <= 0:
 			particles.remove_at(i)
 	var target := Vector2(320, clampf(player.position.y - 48, SUMMIT, 324))
+	if not arenas.active_room.is_empty():
+		target = Vector2(960,arenas.active_room.floor-140)
 	if not started:
 		target = Vector2(320,324)
 	camera.position = camera.position.lerp(target, 1.0 - exp(-delta * 7))
@@ -200,6 +215,11 @@ func _update_enemies(delta: float) -> void:
 		if e.hp <= 0:
 			continue
 		e.hit = maxf(0,e.hit-delta)
+		if e.kind == "boss" and not arenas.rooms.is_empty():
+			arenas.tick_boss(e,delta)
+			continue
+		if not arenas.active_room.is_empty():
+			continue
 		if absf(e.home.y-player.position.y) > 260:
 			continue
 		e.t += delta
@@ -294,6 +314,8 @@ func _update_bullets(delta: float) -> void:
 						sound("save")
 				b.life = 0
 			for e: Dictionary in enemies:
+				if e.kind == "boss" and not arenas.rooms.is_empty() and (arenas.active_room.is_empty() or arenas.active_room.id != e.id):
+					continue
 				if b.life > 0 and e.hp > 0 and b.p.distance_to(e.p) < (22 if e.kind == "boss" else 12):
 					e.hp -= 1
 					e.hit = 0.15
@@ -333,6 +355,13 @@ func gate_open(gate: Dictionary) -> bool:
 		return player.dash_unlocked and int(player.state.timers.get("dash_timer",0)) > 0
 	return locks.get(gate.lock,false)
 
+func wall_kicked(p: Vector2) -> void:
+	for plate: Dictionary in kick_plates:
+		if p.distance_to(plate.p) < 40:
+			locks[plate.lock] = true
+			notify("KICK LATCH RELEASED / Upper passage open.",4)
+			sound("save")
+
 func _update_dangers() -> void:
 	var body := Rect2(player.position-Vector2(4,7),Vector2(8,14))
 	for gate: Dictionary in gates:
@@ -357,6 +386,7 @@ func notify(text: String, duration: float) -> void:
 
 func on_respawn() -> void:
 	deaths += 1
+	arenas.reset()
 	bullets.clear()
 	hostile.clear()
 	# Unfinished encounters reset completely; completed vaults stay open.
@@ -367,6 +397,8 @@ func on_respawn() -> void:
 			e.volley = 0
 			e.t = 0.0
 			e.p = e.home
+			e.engaged = false
+			e.erase("target")
 	camera.position = Vector2(320,clampf(player.position.y-48,SUMMIT,324))
 	notify("SUIT RECONSTRUCTED / Equipment retained. Unfinished guardians restored.",4)
 
@@ -410,10 +442,18 @@ func _draw() -> void:
 			draw_rect(Rect2(p+Vector2(e.dir*5-1,-3),Vector2(3,2)),Color("ffe8a3"))
 		elif e.kind == "boss":
 			var radius := 20.0
+			var boss_color: Color = {"warden":Color("d3a46c"),"sentinel":Color("8edeea"),"reservoir":Color("a1ce87"),"crown":Color("d6a0e8")}.get(e.id,color)
+			if e.hit <= 0:
+				color = boss_color
 			draw_circle(p,25,Color("263848"))
-			for n in range(8):
-				var d := Vector2.RIGHT.rotated(n*TAU/8+e.t*0.25)
-				draw_line(p+d*10,p+d*(radius+sin(e.t*3+n)*3),Color("ab8f9e"),5)
+			var limbs: int = {"warden":4,"sentinel":3,"reservoir":7,"crown":12}.get(e.id,8)
+			for n in range(limbs):
+				var d := Vector2.RIGHT.rotated(n*TAU/limbs+e.t*0.25)
+				draw_line(p+d*10,p+d*(radius+sin(e.t*3+n)*5),boss_color,5 if e.id == "warden" else 3)
+			if e.id == "sentinel":
+				draw_arc(p,30,e.t,e.t+PI,3,boss_color,2)
+			elif e.id == "crown":
+				draw_arc(p,31,0,TAU,12,boss_color,1)
 			draw_circle(p,13,color)
 			draw_circle(p,7,Color("ecd39a"))
 			draw_circle(p,3,Color("473953"))

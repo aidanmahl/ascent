@@ -25,4 +25,16 @@ func run() -> void:
 			await process_frame
 		await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png("res://tools/screenshots/"+entry[0]+".png")
+	for room: Dictionary in world.arenas.rooms:
+		world.arenas.active_room = room
+		world.arenas.teleport(room.spawn)
+		world.player.queue_redraw()
+		for e: Dictionary in world.enemies:
+			if e.id == room.id:
+				e.cooldown = 0
+				world.arenas.tick_boss(e,0.016)
+		for i in range(4):
+			await process_frame
+		await RenderingServer.frame_post_draw
+		root.get_texture().get_image().save_png("res://tools/screenshots/arena_"+room.id+".png")
 	quit()

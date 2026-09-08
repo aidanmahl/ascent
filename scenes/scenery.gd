@@ -28,7 +28,7 @@ func _draw() -> void:
 	for y in range(int(top/16)*16-16,int(bottom)+32,16):
 		var daylight := clampf((-float(y)-2400)/1750,0,1)
 		var c := Color("101e2c").lerp(Color("7aa5ac"),daylight)
-		draw_rect(Rect2(-10,y,660,16),c)
+		draw_rect(Rect2(world.camera.position.x-330,y,660,16),c)
 	# Distant walls move more slowly than the foreground.
 	for shape in rock_shapes:
 		var shifted := PackedVector2Array()

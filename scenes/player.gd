@@ -23,8 +23,7 @@ var aim := Vector2.RIGHT
 var animation := 0.0
 var flash := 0.0
 var active := false
-var mouse_aim := false
-var last_mouse := Vector2.ZERO
+var recharge_timer := 0.0
 
 func _physics_process(delta: float) -> void:
 	if not active:
@@ -35,6 +34,7 @@ func _physics_process(delta: float) -> void:
 	kick_flash = maxf(0,kick_flash-delta)
 	invincible = maxf(0, invincible - delta)
 	shot_timer = maxf(0, shot_timer - delta)
+	recharge_timer = maxf(0, recharge_timer - delta)
 	flash = maxf(0, flash - delta)
 	state.move_left = Input.is_action_pressed("move_left")
 	state.move_right = Input.is_action_pressed("move_right")
@@ -63,8 +63,9 @@ func _physics_process(delta: float) -> void:
 		flight_id += 1
 	if had_kick and not state.wall_kick_available:
 		kick_flash = 0.18
+		get_parent().wall_kicked(position)
 		get_parent().burst(position,Color("d4b6ec"),8)
-	if state.on_floor:
+	if state.on_floor and (not grounded or recharge_timer <= 0):
 		ammo = max_ammo
 	if not grounded and state.on_floor and previous_velocity.y > 2:
 		get_parent().burst(position + Vector2(0, 8), Color("91b5a0"), 7)
@@ -78,9 +79,12 @@ func _physics_process(delta: float) -> void:
 	# mouse_aim flag could remain false after a keyboard look, leaving the
 	# weapon locked vertically until the cursor moved again.
 	var cursor_vector := get_global_mouse_position() - position
-	if state.look_down:
+	# Vertical shortcuts belong exclusively to keyboard fire. Movement and
+	# dash direction must never steal the mouse's weapon direction.
+	var keyboard_fire := Input.is_action_pressed("fire_key") and not Input.is_action_pressed("fire")
+	if keyboard_fire and state.look_down:
 		aim = Vector2.DOWN
-	elif state.look_up:
+	elif keyboard_fire and state.look_up:
 		aim = Vector2.UP
 	elif cursor_vector.length_squared() > 9.0:
 		aim = cursor_vector.normalized()
@@ -94,7 +98,8 @@ func shoot() -> void:
 	if not gun_unlocked or shot_timer > 0 or ammo <= 0:
 		return
 	ammo -= 1
-	shot_timer = 0.19
+	shot_timer = 0.19 if not state.on_floor else 0.48
+	recharge_timer = 0.85
 	flash = 0.075
 	recoil_flash = 0.15
 	# Recoil adds velocity without taking away air control.
