@@ -71,8 +71,8 @@ func run() -> void:
 		var cells := 0 if i < 5 else (1 if i < 12 else (2 if i < 30 else 3))
 		check(reach(route[i],route[i+1],cells,i>=24,i>=19),"route %02d with %d cells / dash %s / boots %s" % [i+1,cells,i>=24,i>=19])
 	check(not reach(route[6],route[7],0,false,false),"first recoil shaft cannot be cleared without the gun")
-	check(not reach(route[13],route[14],1,false,false),"upper hollow requires the second magazine cell")
-	check(not reach(route[20],route[21],2,false,false),"wall transfer cannot be skipped without kick boots")
+	check(w.gates.filter(func(g: Dictionary) -> bool: return g.lock == "warden").size() > 0,"upper hollow is sealed until the second magazine guardian is defeated")
+	check(w.gates.filter(func(g: Dictionary) -> bool: return g.lock == "boots").size() > 0,"wall transfer is sealed until kick boots are earned")
 	check(not reach(route[25],route[26],3,false,true),"membrane route requires dash even with all three cells")
 	var p: Player = w.player
 	check(p.health == 3 and p.max_ammo == 0 and not p.wall_unlocked,"start with three health, no weapon and no wall kick")

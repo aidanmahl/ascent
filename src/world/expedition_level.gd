@@ -8,7 +8,7 @@ const ROUTE := [
 	Vector3i(31,18,5), Vector3i(26,15,9), Vector3i(10,15,5),
 	Vector3i(17,9,5), Vector3i(25,3,5), Vector3i(17,-3,5),
 	Vector3i(9,-9,6), Vector3i(17,-13,5), Vector3i(25,-13,11),
-	Vector3i(17,-13,5), Vector3i(10,-21,5), Vector3i(18,-29,5),
+	Vector3i(17,-13,5), Vector3i(10,-21,5), Vector3i(18,-32,5),
 	Vector3i(26,-37,5), Vector3i(19,-45,5), Vector3i(11,-53,6),
 	Vector3i(4,-57,9), Vector3i(17,-61,5), Vector3i(18,-73,4),
 	Vector3i(11,-80,5), Vector3i(19,-88,5), Vector3i(27,-92,9),
@@ -22,6 +22,9 @@ const ROUTE := [
 ]
 
 static func build(w: Node2D) -> void:
+	if w.layout and not w.layout.platforms.is_empty():
+		build_from_layout(w)
+		return
 	w._fill(0,39,30,34)
 	w._fill(0,1,-260,30)
 	w._fill(38,39,-260,30)
@@ -30,10 +33,13 @@ static func build(w: Node2D) -> void:
 		w.platforms.append(Rect2(p.x*16,p.y*16,p.z*16,32))
 	# Finite wall-kick transfer. There is no continuous wall ladder.
 	w._fill(23,23,-77,-61)
+	# The narrow transfer is sealed until the magnetic boots are earned.
+	_barrier(w,-77,11,18,"seal","boots")
 	# Relay divider: the second target requires moving above the partition.
 	w._fill(8,8,-62,-58)
 	# Stone diaphragms force travel through their visible openings.
 	_barrier(w,-99,24,27,"phase", "")
+	_barrier(w,-29,18,22,"seal", "warden")
 	_barrier(w,-139,18,21,"seal", "airlock")
 	_barrier(w,-187,8,12,"phase", "")
 	_barrier(w,-247,12,27,"seal", "crown")
@@ -85,6 +91,25 @@ static func build(w: Node2D) -> void:
 		[Vector2(426,-2060),"ROOTHEART / FINAL MAGAZINE"],
 		[Vector2(249,-2244),"DROP RIGHT. FIRE DOWN INTO CORE 3x."],
 		[Vector2(326,-3854),"THE CROWN / BREAK THE LAST SEAL"]]
+
+static func build_from_layout(w: Node2D) -> void:
+	var bounds: Rect2 = w.layout.bounds
+	w._fill(floori(bounds.position.x / 16.0), ceili(bounds.end.x / 16.0) - 1, floori(bounds.end.y / 16.0) - 1, ceili(bounds.end.y / 16.0) - 1)
+	for rect: Rect2 in w.layout.platforms:
+		w._fill(floori(rect.position.x / 16.0), ceili(rect.end.x / 16.0) - 1, floori(rect.position.y / 16.0), ceili(rect.end.y / 16.0) - 1)
+		w.platforms.append(rect)
+	for rect: Rect2 in w.layout.spike_strips:
+		w.hazards.append({"rect": rect, "kind": "spikes", "phase": 0.0})
+	for spawn: Vector4 in w.layout.enemy_spawns:
+		var kind := "crawler" if int(spawn.z) == 0 else ("drifter" if int(spawn.z) == 1 else "boss")
+		var hp := maxi(1, int(spawn.w))
+		var p := Vector2(spawn.x, spawn.y)
+		if kind == "crawler":
+			w.add_enemy(kind, p, "", hp, p.x - 40, p.x + 40)
+		elif kind == "drifter":
+			w.add_enemy(kind, p, "", hp)
+		else:
+			w.add_enemy(kind, p, "guardian_%d" % w.enemies.size(), hp)
 
 static func _item(p: Vector2,kind: String,lock: String,label: String) -> Dictionary:
 	return {"p":p,"kind":kind,"lock":lock,"label":label,"taken":false}

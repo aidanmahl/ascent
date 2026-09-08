@@ -6,6 +6,7 @@ const Audio = preload("res://scenes/sound.gd")
 const START := Vector2(120, 472)
 const SUMMIT := -4048.0
 const Level = preload("res://src/world/expedition_level.gd")
+const Layout = preload("res://src/world/level_layout.gd")
 var tiles: Dictionary = {}
 var platforms: Array[Rect2] = []
 var enemies: Array[Dictionary] = []
@@ -42,6 +43,8 @@ var hud: Node2D
 var audio: Node
 var rng := RandomNumberGenerator.new()
 @onready var player: Player = $Player
+@export_category("Level Authoring")
+@export var layout: Resource
 
 func _ready() -> void:
 	rng.seed = 8021

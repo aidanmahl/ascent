@@ -74,20 +74,18 @@ func _physics_process(delta: float) -> void:
 		get_parent().sound("dash")
 	if int(state.timers.get("dash_timer", 0)) > 0:
 		get_parent().burst(position, Color("72ecd3"), 2)
-	var mouse := get_viewport().get_mouse_position()
-	if mouse.distance_to(last_mouse) > 2:
-		mouse_aim = true
-	last_mouse = mouse
-	if Input.is_action_pressed("fire_key") or state.look_down or state.look_up:
-		mouse_aim = false
-	if mouse_aim:
-		aim = (get_global_mouse_position() - position).normalized()
+	# Mouse aim is sampled in world space every frame. Previously the cached
+	# mouse_aim flag could remain false after a keyboard look, leaving the
+	# weapon locked vertically until the cursor moved again.
+	var cursor_vector := get_global_mouse_position() - position
+	if state.look_down:
+		aim = Vector2.DOWN
+	elif state.look_up:
+		aim = Vector2.UP
+	elif cursor_vector.length_squared() > 9.0:
+		aim = cursor_vector.normalized()
 	else:
 		aim = Vector2(state.facing, 0)
-		if state.look_down:
-			aim = Vector2.DOWN
-		elif state.look_up:
-			aim = Vector2.UP
 	if gun_unlocked and (Input.is_action_pressed("fire") or Input.is_action_pressed("fire_key")):
 		shoot()
 	queue_redraw()
@@ -170,7 +168,7 @@ func _draw() -> void:
 			draw_circle(aim * 15, 4, Color("fff0ac"))
 
 static func apply_recoil(movement: MovementState,direction: Vector2) -> void:
-	movement.velocity -= direction*2.7
+	movement.velocity -= direction * 3.3
 	if direction.y > 0.45:
-		movement.velocity.y = minf(movement.velocity.y,-3.6)
-	movement.velocity.y = maxf(movement.velocity.y,-8.5)
+		movement.velocity.y = minf(movement.velocity.y, -4.35)
+	movement.velocity.y = maxf(movement.velocity.y, -9.5)
