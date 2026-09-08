@@ -52,7 +52,9 @@ static func build(w: Node2D) -> void:
 	# The opening runway is a safe read of the jump arc. Hazards begin after
 	# the first landing so the player can learn the climb before being asked
 	# to thread a jump over damage.
-	for i in [2,8,13,15,17,21,27,32,34,36,39,40]:
+	# Leave the first three landings clean; the first hazard begins after the
+	# player has had room to learn the normal jump arc.
+	for i in [8,13,15,17,21,27,32,34,36,39,40]:
 		var ledge: Rect2 = w.platforms[i]
 		var x := ledge.position.x if i%2 == 0 else ledge.end.x-12
 		w.hazards.append({"rect":Rect2(x,ledge.position.y-8,12,8),"kind":"spikes","phase":0.0})
