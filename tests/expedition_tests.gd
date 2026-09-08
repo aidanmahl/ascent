@@ -29,6 +29,10 @@ func reach(source: Rect2,target: Rect2,cells: int,dash: bool,boots: bool) -> boo
 					s.position = Vector2(start_x,source.position.y-8)
 					s.on_floor = true
 					s.dash_available = dash
+					# Wide authored ledges allow a normal run-up. Test at full run speed
+					# so both positive routes and sequence-break checks model play.
+					var launch_slot := (start_x - (int(source.position.x) + 8)) / 16
+					s.velocity.x = 0.0 if launch_slot % 2 == 0 else signf(target.get_center().x-source.get_center().x) * cfg.max_run_speed
 					var remaining := cells
 					for frame in range(160):
 						var dx := target.get_center().x-s.position.x
@@ -71,9 +75,10 @@ func run() -> void:
 		var cells := 0 if i < 5 else (1 if i < 12 else (2 if i < 30 else 3))
 		check(reach(route[i],route[i+1],cells,i>=24,i>=19),"route %02d with %d cells / dash %s / boots %s" % [i+1,cells,i>=24,i>=19])
 	check(not reach(route[6],route[7],0,false,false),"first recoil shaft cannot be cleared without the gun")
+	check(not reach(route[12],route[13],1,false,false),"two-cell hollow cannot be cleared with one cell")
 	check(w.gates.filter(func(g: Dictionary) -> bool: return g.lock == "warden").size() > 0,"upper hollow is sealed until the second magazine guardian is defeated")
 	check(w.gates.filter(func(g: Dictionary) -> bool: return g.lock == "boots").size() > 0,"wall transfer is sealed until kick boots are earned")
-	check(not reach(route[25],route[26],3,false,true),"membrane route requires dash even with all three cells")
+	check(not reach(route[24],route[25],3,false,true),"membrane route requires dash even with all three cells")
 	var p: Player = w.player
 	check(p.health == 3 and p.max_ammo == 0 and not p.wall_unlocked,"start with three health, no weapon and no wall kick")
 	p.position = w.pickups[1].p
@@ -136,7 +141,9 @@ func run() -> void:
 	p.state.double_jump_enabled = false
 	p.state.wall_jump_enabled = true
 	p.state.ground_refill_only = true
-	p.state.position = Vector2(392,-2168)
+	# The traversal puzzle is solved from above: fire downward through the
+	# core while recoil carries the same airborne flight into the airlock.
+	p.state.position = w.capacitor.p - Vector2(0, 45)
 	p.state.velocity = Vector2(0,-5.2)
 	p.ammo = 3
 	p.flight_id = 9
