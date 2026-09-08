@@ -92,7 +92,7 @@ func _draw() -> void:
 			var y := 192.0 + sin(i*4.0)*13
 			draw_colored_polygon(PackedVector2Array([Vector2(x,y-80),Vector2(x+43,y-80),Vector2(x+25,y+float(i%3)*16)]),Color("172c39"))
 		_draw_ship()
-		_world_text(Vector2(79,435),"VESSEL 07 / NO SIGNAL",Color("8ca4a6"),8)
+		# The wreck is readable without a caption.
 
 	# Upper-canopy foliage, distant rain and hanging fronds.
 	if cy < -2200:

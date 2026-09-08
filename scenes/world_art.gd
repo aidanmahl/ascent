@@ -84,7 +84,6 @@ func _draw() -> void:
 		draw_circle(core,15,Color("3e5565"))
 		for i in range(3):
 			draw_rect(Rect2(core+Vector2(-9+i*7,-6),Vector2(5,12)),MINT if world.locks.get("airlock",false) or i < world.capacitor.hits else Color("cc9779"))
-	for sign in world.signs:
-		var p: Vector2 = sign[0]
-		if p.y > top and p.y < bottom:
-			draw_string(ThemeDB.fallback_font,p,sign[1],HORIZONTAL_ALIGNMENT_LEFT,-1,8,Color("acc6b7"))
+	# The world communicates through silhouettes, item placement, and motion.
+	# Keep authored signs available for level design, but leave the playfield
+	# visually quiet; pickups and the HUD carry the actionable information.

@@ -49,7 +49,9 @@ static func build(w: Node2D) -> void:
 		{"p":Vector2(186,-1004),"group":"boots","lit":false,"timer":0.0}])
 	w.capacitor = {"p":Vector2(392,-2128),"hits":0,"flight":-1}
 	# Warm red is always dangerous. Spikes have actual tips above stone.
-	w.hazards.append({"rect":Rect2(272,472,112,8),"kind":"spikes","phase":0.0})
+	# The opening runway is a safe read of the jump arc. Hazards begin after
+	# the first landing so the player can learn the climb before being asked
+	# to thread a jump over damage.
 	for i in [2,8,13,15,17,21,27,32,34,36,39,40]:
 		var ledge: Rect2 = w.platforms[i]
 		var x := ledge.position.x if i%2 == 0 else ledge.end.x-12
