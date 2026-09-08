@@ -2,6 +2,7 @@ extends CharacterBody2D
 class_name Player
 
 @export var config: MovementConfig
+@export var combat_config: CombatConfig = preload("res://src/combat/expedition_combat_config.tres")
 var state := MovementState.new()
 var solid_tiles: Dictionary = {}
 var spawn_point := Vector2(120, 472)
@@ -17,6 +18,7 @@ var dash_unlocked := false
 var ammo := 0
 const MAX_HEALTH := 3
 var health := MAX_HEALTH
+var max_health := MAX_HEALTH
 var invincible := 0.0
 var shot_timer := 0.0
 var aim := Vector2.RIGHT
@@ -24,6 +26,10 @@ var animation := 0.0
 var flash := 0.0
 var active := false
 var recharge_timer := 0.0
+var slash_time := 0.0
+var slash_direction := Vector2.RIGHT
+var slash_hits: Dictionary = {}
+var slash_refund := false
 
 func _physics_process(delta: float) -> void:
 	if not active:
@@ -36,6 +42,7 @@ func _physics_process(delta: float) -> void:
 	shot_timer = maxf(0, shot_timer - delta)
 	recharge_timer = maxf(0, recharge_timer - delta)
 	flash = maxf(0, flash - delta)
+	slash_time = maxf(0, slash_time - delta)
 	state.move_left = Input.is_action_pressed("move_left")
 	state.move_right = Input.is_action_pressed("move_right")
 	state.look_up = Input.is_action_pressed("look_up")
@@ -59,6 +66,10 @@ func _physics_process(delta: float) -> void:
 	PlayerMovement.process(state, config, solid_tiles, spawn_point)
 	position = state.position
 	velocity = state.velocity
+	# Headless movement fixtures construct the world before starting a run.
+	# Live gate resolution begins only once the expedition has actually started.
+	if get_parent().started:
+		get_parent().resolve_player_gates(self, previous_position, int(state.timers.get("dash_timer",0)) > 0)
 	if grounded and not state.on_floor:
 		flight_id += 1
 	if had_kick and not state.wall_kick_available:
@@ -92,14 +103,18 @@ func _physics_process(delta: float) -> void:
 		aim = Vector2(state.facing, 0)
 	if gun_unlocked and (Input.is_action_pressed("fire") or Input.is_action_pressed("fire_key")):
 		shoot()
+	if Input.is_action_just_pressed("slash"):
+		slash()
+	if slash_is_active():
+		get_parent().resolve_slash(self)
 	queue_redraw()
 
 func shoot() -> void:
 	if not gun_unlocked or shot_timer > 0 or ammo <= 0:
 		return
 	ammo -= 1
-	shot_timer = 0.19 if not state.on_floor else 0.48
-	recharge_timer = 0.85
+	shot_timer = float(combat_config.shot_cooldown_frames) / 60.0
+	recharge_timer = float(combat_config.ground_recharge_frames) / 60.0
 	flash = 0.075
 	recoil_flash = 0.15
 	# Recoil adds velocity without taking away air control.
@@ -107,6 +122,27 @@ func shoot() -> void:
 		apply_recoil(state,aim)
 	get_parent().fire(position + aim * 10, aim, not state.on_floor, flight_id)
 	get_parent().sound("shot")
+
+func slash() -> void:
+	if not gun_unlocked or slash_time > 0:
+		return
+	slash_time = float(combat_config.slash_windup_frames + combat_config.slash_active_frames + combat_config.slash_recovery_frames) / 60.0
+	slash_direction = aim.normalized()
+	slash_hits.clear()
+	slash_refund = false
+	get_parent().sound("dash")
+
+func slash_is_active() -> bool:
+	var total := combat_config.slash_windup_frames + combat_config.slash_active_frames + combat_config.slash_recovery_frames
+	var elapsed := total - roundi(slash_time * 60.0)
+	return elapsed >= combat_config.slash_windup_frames and elapsed < combat_config.slash_windup_frames + combat_config.slash_active_frames
+
+func parry_is_active() -> bool:
+	if not slash_is_active():
+		return false
+	var total := combat_config.slash_windup_frames + combat_config.slash_active_frames + combat_config.slash_recovery_frames
+	var elapsed := total - roundi(slash_time * 60.0)
+	return elapsed < combat_config.slash_windup_frames + combat_config.parry_frames
 
 func hurt(from: Vector2) -> void:
 	if invincible > 0 or not active:
@@ -123,9 +159,11 @@ func hurt(from: Vector2) -> void:
 func respawn() -> void:
 	PlayerMovement._reset(state, spawn_point)
 	position = spawn_point
-	health = MAX_HEALTH
+	health = max_health
 	ammo = max_ammo
 	invincible = 1.5
+	slash_time = 0
+	slash_hits.clear()
 	get_parent().on_respawn()
 
 func _draw() -> void:
@@ -135,6 +173,9 @@ func _draw() -> void:
 		draw_arc(Vector2.ZERO,15*(1-recoil_flash/0.15)+6,aim.angle()-0.9,aim.angle()+0.9,8,Color("efd39a"),1)
 	if kick_flash > 0:
 		draw_arc(Vector2(0,6),10,-PI,0,8,Color("cea4e3"),1)
+	if slash_is_active():
+		var alpha := 0.85 if parry_is_active() else 0.55
+		draw_arc(Vector2.ZERO,32,slash_direction.angle()-deg_to_rad(combat_config.slash_arc_degrees*0.5),slash_direction.angle()+deg_to_rad(combat_config.slash_arc_degrees*0.5),14,Color(0.55,1,0.8,alpha),3)
 	var facing := state.facing
 	if gun_unlocked:
 		facing = -1.0 if aim.x < -0.1 else (1.0 if aim.x > 0.1 else facing)

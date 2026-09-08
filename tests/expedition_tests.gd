@@ -69,6 +69,12 @@ func run() -> void:
 	w.muted = true
 	w.set_physics_process(false)
 	w.player.set_physics_process(false)
+	# A membrane is a swept trigger: crossing it during a dash permanently
+	# opens it, so an expiring dash can never restore the player into it.
+	var membrane := Rect2(100,100,16,80)
+	check(GateCollision.swept_touches(Vector2(80,140),Vector2(130,140),membrane,Vector2(10,16)),"dash sweep detects a membrane crossing")
+	var embedded := GateCollision.nearest_clear_position(Vector2(108,140),membrane,Vector2(10,16),Vector2(4,0))
+	check(not GateCollision.body_rect(embedded,Vector2(10,16)).intersects(membrane),"closed membrane resolves an embedded body to a clear face")
 	var route: Array[Rect2] = [Rect2(80,480,190,16)]
 	route.append_array(w.platforms)
 	for i in range(route.size()-1):
@@ -93,6 +99,10 @@ func run() -> void:
 	p.position = w.pickups[0].p
 	w._update_pickups()
 	check(p.gun_unlocked and p.max_ammo == 1,"salvage cutter begins with exactly one charge")
+	p.slash_time = 0
+	p.aim = Vector2.RIGHT
+	p.slash()
+	check(p.slash_time > 0 and p.slash_direction == Vector2.RIGHT,"cutter slash snapshots direction and starts its active window")
 	w.locks.warden = true
 	p.position = w.pickups[1].p
 	w._update_pickups()
@@ -159,7 +169,7 @@ func run() -> void:
 		PlayerMovement.process(p.state,p.config,w.tiles)
 		p.position = p.state.position
 		p.shot_timer = maxf(0,p.shot_timer-1.0/60)
-		if frame in [0,12,24]:
+		if frame in [0,13,26]:
 			p.shoot()
 		w._update_bullets(1.0/60)
 		w._update_challenges(1.0/60)
@@ -240,7 +250,7 @@ func run() -> void:
 	for frame in range(180):
 		p._physics_process(1.0/60)
 	Input.action_release("fire")
-	check(w.bullets.size() <= 5,"three seconds of grounded fire is limited by recharge and shot cadence")
+	check(w.bullets.size() <= 16,"three seconds of grounded fire is limited by the new 12-frame cutter cadence")
 	Input.action_press("look_down")
 	Input.action_press("fire_key")
 	p._physics_process(1.0/60)
@@ -287,5 +297,21 @@ func run() -> void:
 	check(p.position == entry.door and w.arenas.active_room.is_empty(),"arena death returns to its entrance for a quick retry")
 	w.wall_kicked(Vector2(440,-1840))
 	check(w.locks.get("kick_latch",false),"wall kick releases the second traversal latch")
+	check(w.rooms.rooms.size() == 3,"three optional exploration rooms are linked from the ascent")
+	var detour: Dictionary = w.rooms.rooms[0]
+	w.rooms.enter(detour)
+	check(w.rooms.active_room.id == "archive" and p.position == detour.spawn,"exploration door enters its independent room safely")
+	w.rooms.leave()
+	check(w.rooms.active_room.is_empty() and p.position == detour.entry,"exploration door always provides a return route")
+	var phase_gate := {"kind":"phase","lock":"","rect":Rect2(300,300,16,64),"breached":false}
+	w.gates.append(phase_gate)
+	p.dash_unlocked = true
+	p.position = Vector2(320,330)
+	p.state.position = p.position
+	w.resolve_player_gates(p,Vector2(270,330),true)
+	check(w.gates.back().breached,"a successful dash permanently breaches a membrane")
+	w.resolve_player_gates(p,p.position,false)
+	check(w.gates.back().breached,"an expired dash never recloses a breached membrane")
+	w.gates.pop_back()
 	w.free()
 	quit(1 if failures else 0)

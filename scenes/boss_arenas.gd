@@ -26,7 +26,7 @@ func build() -> void:
 			if enemy.id == ids[i]:
 				enemy.home = room.center
 				enemy.p = room.center
-				enemy.max_hp = [14,18,22,28][i]
+				enemy.max_hp = [18,24,28,36][i]
 				enemy.hp = enemy.max_hp
 
 func update(delta: float) -> void:
@@ -61,7 +61,7 @@ func enter_room(room: Dictionary) -> void:
 	active_room = room
 	world.player.spawn_point = room.door
 	teleport(room.spawn)
-	world.player.health = Player.MAX_HEALTH
+	world.player.health = world.player.max_health
 	world.player.invincible = 1.0
 	world.hostile.clear()
 	world.bullets.clear()
@@ -105,36 +105,53 @@ func tick_boss(e: Dictionary,delta: float) -> void:
 		var direction: Vector2 = (target-e.p).normalized()
 		match e.id:
 			"warden":
-				# Alternate an aimed fan with a floor-wide, jumpable shockwave.
-				if e.volley % 2 == 0:
+				# Fan, sweep, then a marked slam with two separated waves.
+				if e.volley % 3 == 0:
 					for n in range(5 if enraged else 3):
 						world.spawn_hostile(e.p,direction.rotated((n-(2 if enraged else 1))*0.23),125)
-				else:
+				elif e.volley % 3 == 1:
 					warning(Rect2(720,floor_y-13,480,13),0.85,0.35)
+				else:
+					warning(Rect2(target.x-38,floor_y-34,76,34),0.72,0.32)
+					warning(Rect2(720,floor_y-13,200,13),1.05,0.24)
+					warning(Rect2(1000,floor_y-13,200,13),1.25,0.24)
 			"sentinel":
-				# Lock onto the player's column; moving after the tell evades it.
-				warning(Rect2(target.x-15,floor_y-270,30,270),0.75,0.4)
-				warning(Rect2(720,target.y-8,480,16),0.95,0.25)
-				if enraged:
+				# Lances, a parryable ricochet bolt, then a high/low beam.
+				if e.volley % 3 == 0:
+					warning(Rect2(target.x-15,floor_y-270,30,270),0.75,0.4)
+					warning(Rect2(720,target.y-8,480,16),0.95,0.25)
+				elif e.volley % 3 == 1:
+					world.spawn_hostile(e.p,direction,190)
+					world.spawn_hostile(e.p,Vector2(-direction.x,direction.y),150)
+				else:
+					var beam_y := floor_y-70 if e.volley % 2 == 0 else floor_y-150
+					warning(Rect2(720,beam_y,480,18),0.9,0.32)
+				if enraged and e.volley % 3 == 0:
 					for n in range(8):
 						world.spawn_hostile(e.p,Vector2.RIGHT.rotated(n*TAU/8+e.volley*0.3),105)
 			"reservoir":
-				# Four root columns, with one conspicuous safe lane that rotates.
+				# Root columns retain an adjacent safe lane; seeds create delayed zones.
 				var safe: int = e.volley % 5
 				for lane in range(5):
 					if lane != safe:
 						warning(Rect2(720+lane*96,floor_y-92,76,92),1.05 if not enraged else 0.8,0.55)
+				if e.volley % 2 == 1:
+					warning(Rect2(target.x-22,floor_y-44,44,44),0.72,0.3)
+					warning(Rect2(720,floor_y-14,150,14),1.12,0.24)
 				for n in range(3):
 					world.spawn_hostile(e.p,direction.rotated((n-1)*0.3),110)
 			"crown":
-				# Rotating ring alternates with staggered lane and floor attacks.
-				if e.volley % 2 == 0:
+				# Ring, dash lane and two-height sweep; each leaves a recovery gap.
+				if e.volley % 3 == 0:
 					for n in range(12):
-						world.spawn_hostile(e.p,Vector2.RIGHT.rotated(n*TAU/12+e.volley*0.27),120 if enraged else 95)
-				else:
+						if n != e.volley % 12:
+							world.spawn_hostile(e.p,Vector2.RIGHT.rotated(n*TAU/12+e.volley*0.27),120 if enraged else 95)
+				elif e.volley % 3 == 1:
 					warning(Rect2(target.x-22,floor_y-270,44,270),0.75,0.35)
-					warning(Rect2(720,floor_y-12,480,12),1.25,0.3)
 					world.spawn_hostile(e.p,direction,155)
+				else:
+					warning(Rect2(720,floor_y-12,480,12),0.9,0.3)
+					warning(Rect2(720,floor_y-120,480,16),1.38,0.28)
 		e.volley += 1
 		e.erase("target")
 		e.cooldown = 1.35 if enraged else 1.8

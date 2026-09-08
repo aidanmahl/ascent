@@ -15,7 +15,7 @@ func _draw() -> void:
 		var r: Rect2 = gate.rect
 		if r.end.y < top or r.position.y > bottom:
 			continue
-		if gate.kind == "seal" and world.locks.get(gate.lock,false):
+		if gate.get("breached",false) or (gate.kind == "seal" and world.locks.get(gate.lock,false)):
 			continue
 		var c := Color("83cbea") if gate.kind == "phase" else Color("d18d91")
 		draw_rect(r,Color(c,0.18))

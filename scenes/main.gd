@@ -6,6 +6,7 @@ const Audio = preload("res://scenes/sound.gd")
 const START := Vector2(120, 472)
 const SUMMIT := -4048.0
 const Level = preload("res://src/world/expedition_level.gd")
+const GateCollision = preload("res://src/collision/gate_collision.gd")
 var tiles: Dictionary = {}
 var platforms: Array[Rect2] = []
 var enemies: Array[Dictionary] = []
@@ -31,6 +32,7 @@ var time := 0.0
 var shake := 0.0
 var started := false
 var paused := false
+var map_open := false
 var finished := false
 var muted := false
 var deaths := 0
@@ -42,6 +44,7 @@ var scenery: Node2D
 var hud: Node2D
 var audio: Node
 var arenas: Node2D
+var rooms: Node2D
 var rng := RandomNumberGenerator.new()
 @onready var player: Player = $Player
 @export_category("Level Authoring")
@@ -66,6 +69,10 @@ func _ready() -> void:
 	add_child(arenas)
 	if not platforms.is_empty() and not enemies.filter(func(e: Dictionary) -> bool: return e.id == "warden").is_empty():
 		arenas.build()
+	rooms = preload("res://scenes/world_rooms.gd").new()
+	rooms.world = self
+	add_child(rooms)
+	rooms.build()
 	var art := preload("res://scenes/world_art.gd").new()
 	art.world = self
 	art.z_index = 2
@@ -98,6 +105,19 @@ func _setup_input() -> void:
 		var click := InputEventMouseButton.new()
 		click.button_index = MOUSE_BUTTON_LEFT
 		InputMap.action_add_event("fire", click)
+	if not InputMap.has_action("slash"):
+		InputMap.add_action("slash")
+		var slash_key := InputEventKey.new()
+		slash_key.physical_keycode = KEY_K
+		InputMap.action_add_event("slash",slash_key)
+		var slash_click := InputEventMouseButton.new()
+		slash_click.button_index = MOUSE_BUTTON_RIGHT
+		InputMap.action_add_event("slash",slash_click)
+	if not InputMap.has_action("map"):
+		InputMap.add_action("map")
+		var map_key := InputEventKey.new()
+		map_key.physical_keycode = KEY_TAB
+		InputMap.action_add_event("map",map_key)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not started and ((event is InputEventMouseButton and event.pressed) or event.is_action_pressed("jump") or (event is InputEventKey and event.pressed and event.keycode == KEY_ENTER)):
@@ -106,7 +126,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		notify("SALVAGE TRAIL / Follow the ledges to your lost cargo. Three suit integrity points.", 6)
 		sound("save")
 		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("map") and started and not finished:
+		map_open = not map_open
+		paused = map_open
+		player.active = not paused
 	elif event.is_action_pressed("pause_game") and started and not finished:
+		map_open = false
 		paused = not paused
 		player.active = not paused
 	elif event.is_action_pressed("mute"):
@@ -124,7 +149,7 @@ func _build_level() -> void:
 	Level.build(self)
 
 func add_enemy(kind: String,p: Vector2,id: String,hp: int,left: float = 0,right: float = 0) -> void:
-	enemies.append({"p":p,"home":p,"kind":kind,"id":id,"hp":hp,"max_hp":hp,"left":left,"right":right,"dir":1.0,"t":0.0,"hit":0.0,"cooldown":1.5,"volley":0,"engaged":false})
+	enemies.append({"p":p,"home":p,"kind":kind,"id":id,"uid":"%s_%d" % [kind,enemies.size()],"hp":hp,"max_hp":hp,"left":left,"right":right,"dir":1.0,"t":0.0,"hit":0.0,"stun":0.0,"cooldown":1.5,"volley":0,"engaged":false})
 
 func _fill(x0: int, x1: int, y0: int, y1: int) -> void:
 	for x in range(x0, x1 + 1):
@@ -139,6 +164,7 @@ func _physics_process(delta: float) -> void:
 		message_time = maxf(0, message_time - delta)
 		_update_pickups()
 		arenas.update(delta)
+		rooms.update(delta)
 		_update_enemies(delta)
 		_update_bullets(delta)
 		_update_hostile(delta)
@@ -159,6 +185,8 @@ func _physics_process(delta: float) -> void:
 	var target := Vector2(320, clampf(player.position.y - 48, SUMMIT, 324))
 	if not arenas.active_room.is_empty():
 		target = Vector2(960,arenas.active_room.floor-140)
+	elif rooms and not rooms.active_room.is_empty():
+		target = rooms.active_room.bounds.get_center() + Vector2(0,-70)
 	if not started:
 		target = Vector2(320,324)
 	camera.position = camera.position.lerp(target, 1.0 - exp(-delta * 7))
@@ -196,15 +224,18 @@ func _update_pickups() -> void:
 			"ammo3":
 				player.max_ammo = 3
 				notify("TRIPLE MAGAZINE / Three airborne shots can overload a relay core.",8)
-		player.health = Player.MAX_HEALTH
+			"fragment":
+				player.max_health = mini(4,player.max_health+1)
+				notify("SUIT FRAGMENT / Maximum integrity increased.",6)
+		player.health = player.max_health
 		player.ammo = player.max_ammo
 		burst(pickup.p,Color("80f2d2"),30)
 		sound("save")
 	for i in range(checkpoints.size()):
-		if i > checkpoint_index and player.position.distance_to(checkpoints[i]) < 25 and player.state.on_floor:
+		if i != checkpoint_index and player.position.distance_to(checkpoints[i]) < 25 and player.state.on_floor:
 			checkpoint_index = i
 			player.spawn_point = checkpoints[i]
-			player.health = Player.MAX_HEALTH
+			player.health = player.max_health
 			notify("SIGNAL ANCHOR / Suit restored. R retries this section.",4)
 			burst(checkpoints[i],Color("80f2d2"),20)
 			sound("save")
@@ -215,6 +246,9 @@ func _update_enemies(delta: float) -> void:
 		if e.hp <= 0:
 			continue
 		e.hit = maxf(0,e.hit-delta)
+		e.stun = maxf(0,float(e.get("stun",0))-delta)
+		if e.stun > 0:
+			continue
 		if e.kind == "boss" and not arenas.rooms.is_empty():
 			arenas.tick_boss(e,delta)
 			continue
@@ -224,10 +258,24 @@ func _update_enemies(delta: float) -> void:
 			continue
 		e.t += delta
 		if e.kind == "crawler":
-			e.p.x += e.dir*29*delta
+			var hunting := absf(player.position.y-e.p.y) < 36 and absf(player.position.x-e.p.x) < 145
+			if hunting:
+				e.dir = signf(player.position.x-e.p.x)
+			e.p.x += e.dir*(78 if hunting else 31)*delta
 			if e.p.x < e.left or e.p.x > e.right:
 				e.dir *= -1
 				e.p.x = clampf(e.p.x,e.left,e.right)
+		elif e.kind == "hunter":
+			e.cooldown -= delta
+			if e.cooldown <= 0:
+				e.charge = (player.position-e.p).normalized()*185
+				e.cooldown = 1.8
+			if e.cooldown > 1.28:
+				var next: Vector2 = e.p + e.charge*delta
+				if not tiles.has(Vector2i(floori(next.x/16),floori(next.y/16))):
+					e.p = next
+			else:
+				e.p = e.p.move_toward(e.home,45*delta)
 		else:
 			# Drifters never chase. A shot only aims when it is spawned.
 			e.p = e.home + Vector2(sin(e.t*TAU/3)*24, sin(e.t*2)*5)
@@ -241,19 +289,71 @@ func _update_enemies(delta: float) -> void:
 					boss_max = e.max_hp
 				if e.cooldown <= 0:
 					var direction: Vector2 = (player.position-e.p).normalized()
-					var count := 3 if e.kind == "drifter" else 5
+					var count := 1 if e.kind == "sentry" else (3 if e.kind == "drifter" else 5)
 					for shot in range(count):
-						spawn_hostile(e.p,direction.rotated(deg_to_rad((shot-(count-1)/2.0)*20)),76 if e.kind == "drifter" else 66)
+						spawn_hostile(e.p,direction.rotated(deg_to_rad((shot-(count-1)/2.0)*20)),210 if e.kind == "sentry" else (105 if e.kind == "drifter" else 66))
 					e.volley += 1
 					if e.kind == "boss" and e.volley%3 == 0:
 						for shot in range(10):
 							spawn_hostile(e.p,Vector2.RIGHT.rotated(shot*TAU/10+e.volley*0.15),54)
-					e.cooldown = 1.65 if e.kind == "drifter" else (1.45 if e.hp > e.max_hp/2 else 1.15)
+					e.cooldown = 1.6 if e.kind == "drifter" else (1.75 if e.kind == "sentry" else (1.45 if e.hp > e.max_hp/2 else 1.15))
 		if player.position.distance_to(e.p) < (23 if e.kind == "boss" else 14):
 			player.hurt(e.p)
 
 func spawn_hostile(p: Vector2,dir: Vector2,speed: float) -> void:
-	hostile.append({"p":p+dir*14,"v":dir*speed,"life":7.0})
+	hostile.append({"p":p+dir*14,"v":dir*speed,"life":7.0,"damage":1})
+
+func resolve_player_gates(body: Player, from: Vector2, dashed: bool) -> void:
+	var collider := body.config.collider_size
+	for gate: Dictionary in gates:
+		if gate.get("breached",false) or (gate.kind == "seal" and locks.get(gate.lock,false)):
+			continue
+		var touches := GateCollision.swept_touches(from,body.position,gate.rect,collider)
+		if not touches:
+			continue
+		if gate.kind == "phase" and body.dash_unlocked and dashed:
+			gate.breached = true
+			burst(body.position,Color("83cbea"),18)
+			notify("MEMBRANE BREACHED / Passage remains open.",3)
+			sound("save")
+			continue
+		var resolved := GateCollision.nearest_clear_position(body.position,gate.rect,collider,body.state.velocity)
+		body.position = resolved
+		body.state.position = resolved
+		if absf(body.state.velocity.x) > absf(body.state.velocity.y):
+			body.state.velocity.x = 0
+		else:
+			body.state.velocity.y = 0
+
+func _within_slash_arc(origin: Vector2, direction: Vector2, target: Vector2, radius: float, degrees: float) -> bool:
+	var offset := target-origin
+	if offset.length() > radius:
+		return false
+	return offset.length() < 0.1 or direction.dot(offset.normalized()) >= cos(deg_to_rad(degrees*0.5))
+
+func resolve_slash(body: Player) -> void:
+	for i in range(hostile.size()-1,-1,-1):
+		var hostile_shot: Dictionary = hostile[i]
+		if not body.parry_is_active() or not _within_slash_arc(body.position,body.slash_direction,hostile_shot.p,42,120):
+			continue
+		hostile.remove_at(i)
+		fire(hostile_shot.p,body.slash_direction,true,body.flight_id,body.combat_config.parry_damage)
+		body.ammo = body.max_ammo
+		body.shot_timer = 0
+		burst(hostile_shot.p,Color("baffde"),12)
+	for enemy: Dictionary in enemies:
+		if enemy.hp <= 0 or body.slash_hits.has(enemy.get("uid",enemy.id)):
+			continue
+		if enemy.kind == "boss" and (arenas.active_room.is_empty() or arenas.active_room.id != enemy.id):
+			continue
+		if _within_slash_arc(body.position,body.slash_direction,enemy.p,body.combat_config.slash_range,body.combat_config.slash_arc_degrees):
+			body.slash_hits[enemy.get("uid",enemy.id)] = true
+			damage_enemy(enemy,body.combat_config.slash_damage,true)
+			if not body.slash_refund:
+				body.ammo = mini(body.max_ammo,body.ammo+1)
+				body.slash_refund = true
+			if not body.state.on_floor and body.slash_direction.y > 0.45:
+				body.state.velocity.y = minf(body.state.velocity.y,-5.8)
 
 func _update_hostile(delta: float) -> void:
 	for i in range(hostile.size()-1,-1,-1):
@@ -262,6 +362,12 @@ func _update_hostile(delta: float) -> void:
 		b.life -= delta
 		if tiles.has(Vector2i(floori(b.p.x/16),floori(b.p.y/16))):
 			b.life = 0
+		if player.parry_is_active() and _within_slash_arc(player.position,player.slash_direction,b.p,42,120):
+			b.life = 0
+			fire(b.p,player.slash_direction,true,player.flight_id,player.combat_config.parry_damage)
+			player.ammo = player.max_ammo
+			player.shot_timer = 0
+			burst(b.p,Color("baffde"),12)
 		var hit: bool = b.p.distance_to(player.position) < 8
 		if b.life <= 0 or hit:
 			hostile.remove_at(i)
@@ -272,8 +378,8 @@ func _update_hostile(delta: float) -> void:
 				return # Recovery clears all remaining bullets.
 
 
-func fire(p: Vector2,direction: Vector2,airborne: bool = false,flight: int = -1) -> void:
-	bullets.append({"p":p,"v":direction*520,"life":0.8,"airborne":airborne,"flight":flight})
+func fire(p: Vector2,direction: Vector2,airborne: bool = false,flight: int = -1,damage: int = 1) -> void:
+	bullets.append({"p":p,"v":direction*520,"life":0.8,"airborne":airborne,"flight":flight,"damage":damage})
 	burst(p,Color("ffe6a3"),4)
 	shake = maxf(shake,0.8)
 
@@ -317,18 +423,8 @@ func _update_bullets(delta: float) -> void:
 				if e.kind == "boss" and not arenas.rooms.is_empty() and (arenas.active_room.is_empty() or arenas.active_room.id != e.id):
 					continue
 				if b.life > 0 and e.hp > 0 and b.p.distance_to(e.p) < (22 if e.kind == "boss" else 12):
-					e.hp -= 1
-					e.hit = 0.15
+					damage_enemy(e,int(b.get("damage",1)),false)
 					b.life = 0
-					burst(e.p,Color("e9a878"),8)
-					if e.hp <= 0:
-						kills += 1
-						burst(e.p,Color("d294ba"),24)
-						sound("kill")
-						if not e.id.is_empty():
-							locks[e.id] = true
-							hostile.clear()
-							notify("GUARDIAN DEFEATED / Salvage released. Claim your upgrade.",6)
 					break
 			if b.life <= 0:
 				break
@@ -350,10 +446,23 @@ func _update_challenges(delta: float) -> void:
 		capacitor.hits = 0
 		capacitor.flight = -1
 
-func gate_open(gate: Dictionary) -> bool:
-	if gate.kind == "phase":
-		return player.dash_unlocked and int(player.state.timers.get("dash_timer",0)) > 0
-	return locks.get(gate.lock,false)
+func damage_enemy(enemy: Dictionary, amount: int, stagger: bool) -> void:
+	if enemy.hp <= 0:
+		return
+	enemy.hp -= amount
+	enemy.hit = 0.15
+	if stagger and enemy.kind != "boss":
+		enemy.stun = float(player.combat_config.normal_stagger_frames) / 60.0
+	burst(enemy.p,Color("e9a878"),8)
+	if enemy.hp <= 0:
+		kills += 1
+		burst(enemy.p,Color("d294ba"),24)
+		sound("kill")
+		if enemy.kind == "boss" and not enemy.id.is_empty():
+			locks[enemy.id] = true
+			hostile.clear()
+			player.health = player.max_health
+			notify("GUARDIAN DEFEATED / Salvage released. Claim your upgrade.",6)
 
 func wall_kicked(p: Vector2) -> void:
 	for plate: Dictionary in kick_plates:
@@ -363,14 +472,8 @@ func wall_kicked(p: Vector2) -> void:
 			sound("save")
 
 func _update_dangers() -> void:
+	# Gate collision is resolved immediately in Player after movement.
 	var body := Rect2(player.position-Vector2(4,7),Vector2(8,14))
-	for gate: Dictionary in gates:
-		if not gate_open(gate) and body.intersects(gate.rect):
-			player.position = player.previous_position
-			player.state.position = player.position
-			player.state.velocity.y = maxf(1,player.state.velocity.y)
-			break
-	body = Rect2(player.position-Vector2(4,7),Vector2(8,14))
 	for hazard: Dictionary in hazards:
 		var dangerous: bool = hazard.kind == "spikes" or fposmod(combat_time+hazard.phase,3.8)>2.8
 		if dangerous and body.intersects(hazard.rect):

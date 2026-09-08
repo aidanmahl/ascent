@@ -100,6 +100,14 @@ static func build(w: Node2D) -> void:
 	for i in [7,13,16,22,26,32,36,39]:
 		var r: Rect2 = w.platforms[i]
 		w.add_enemy("drifter",Vector2(r.position.x-26,r.position.y-32),"",1)
+	# Two late-game roles turn broad shelves into small combat spaces rather
+	# than more of the same jump-and-shoot rhythm.
+	for i in [17,31,37]:
+		var hunter_ledge: Rect2 = w.platforms[i]
+		w.add_enemy("hunter",Vector2(hunter_ledge.get_center().x,hunter_ledge.position.y-24),"",3,hunter_ledge.position.x+12,hunter_ledge.end.x-12)
+	for i in [20,28,35]:
+		var sentry_ledge: Rect2 = w.platforms[i]
+		w.add_enemy("sentry",Vector2(sentry_ledge.end.x-18,sentry_ledge.position.y-18),"",3)
 	w.add_enemy("boss",_point(w,11)+Vector2(0,-48),"warden",7)
 	w.add_enemy("boss",_point(w,23)+Vector2(0,-48),"sentinel",10)
 	w.add_enemy("boss",_point(w,29)+Vector2(0,-48),"reservoir",12)

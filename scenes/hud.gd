@@ -17,30 +17,24 @@ func _draw() -> void:
 		var cursor := get_global_mouse_position()
 		var ready: bool = world.player.ammo > 0 and world.player.shot_timer <= 0
 		var tint := MINT if ready else Color("e2a078")
-		draw_arc(cursor,5,0,TAU,16,INK,3)
-		draw_arc(cursor,5,0,TAU,16,tint,1)
+		draw_arc(cursor,10,0,TAU,24,INK,3)
+		var cells := maxi(1,world.player.max_ammo)
+		for i in range(cells):
+			var start := -PI/2 + TAU*float(i)/cells + 0.08
+			var finish := -PI/2 + TAU*float(i+1)/cells - 0.08
+			var loaded: bool = world.player.gun_unlocked and i < world.player.ammo
+			draw_arc(cursor,10,start,finish,10,tint if loaded else Color("435962"),2)
+		if world.player.state.on_floor and world.player.recharge_timer > 0 and world.player.max_ammo > 0:
+			var fill: float = 1.0-world.player.recharge_timer/(float(world.player.combat_config.ground_recharge_frames)/60.0)
+			draw_arc(cursor,6,-PI/2,-PI/2+TAU*fill,12,Color("e8c789"),1)
 		for direction in [Vector2.UP,Vector2.DOWN,Vector2.LEFT,Vector2.RIGHT]:
 			draw_line(cursor+direction*8,cursor+direction*11,tint,1)
 		draw_circle(cursor,1,CREAM)
 	if not world.started:
 		_title()
 		return
-	panel(Rect2(12,12,180,42))
-	text(Vector2(22,28),"A S C E N T",13)
-	text(Vector2(22,44),world.zone(),9,MINT)
-	panel(Rect2(456,12,172,42))
-	text(Vector2(468,28),"SUIT",9,Color("9bb0ac"))
-	for i in range(3):
-		draw_rect(Rect2(512+i*31,20,23,6),MINT if i < world.player.health else Color("344750"))
-	text(Vector2(468,44),"PULSE",9,Color("9bb0ac"))
-	for i in range(world.player.max_ammo):
-		draw_rect(Rect2(508+i*31,37,23,5),Color("e8c789") if world.player.gun_unlocked and i < world.player.ammo else Color("344750"))
-	var altitude := maxi(0,int((472-world.player.position.y)/8))
-	text(Vector2(296,26),"%03d m" % altitude,13)
-	# Quiet altitude rail along the edge of the viewport.
-	draw_rect(Rect2(621,77,2,200),Color("354d53"))
-	var progress := clampf((472-world.player.position.y)/(472-world.SUMMIT),0,1)
-	draw_rect(Rect2(619,274-progress*197,6,4),MINT)
+	for i in range(world.player.health):
+		draw_rect(Rect2(12+i*13,12,9,4),MINT)
 	if world.message_time > 0:
 		panel(Rect2(55,279,530,26))
 		text(Vector2(67,296),world.message,10,MINT)
@@ -52,8 +46,15 @@ func _draw() -> void:
 	if world.paused:
 		draw_rect(Rect2(0,0,640,360),Color(0.03,0.08,0.11,0.78))
 		panel(Rect2(140,92,360,174))
-		text(Vector2(258,126),"SIGNAL HELD",22)
-		text(Vector2(226,197),"ESC / P TO RESUME",12,MINT)
+		if world.map_open:
+			text(Vector2(275,116),"EXPEDITION MAP",18)
+			text(Vector2(185,151),"WRECK -- HOLLOW -- RELAY -- GLASS -- CANOPY",10,MINT)
+			text(Vector2(185,174),"WARDEN  >  BOOTS  >  SENTINEL  >  ROOTHEART  >  CROWN",10,CREAM)
+			text(Vector2(220,219),"TAB / ESC TO CLOSE",12,MINT)
+		else:
+			text(Vector2(258,126),"SIGNAL HELD",22)
+			text(Vector2(176,175),"RMB / K SLASH + PARRY   TAB MAP",11,MINT)
+			text(Vector2(226,211),"ESC / P TO RESUME",12,MINT)
 	if world.finished:
 		draw_rect(Rect2(0,0,640,360),Color(0.03,0.08,0.11,0.8))
 		panel(Rect2(124,74,392,218))
