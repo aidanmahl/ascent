@@ -47,6 +47,14 @@ if ($missing.Count -gt 0) {
   exit 1
 }
 
+# GitHub Pages and browsers cache the generated `index.pck` by filename. Add
+# the commit revision to the main-pack URL so a new deployment cannot keep
+# launching the previous chapter from a stale cache.
+$revision = (git rev-parse --short HEAD).Trim()
+$html = Get-Content $indexPath -Raw
+$html = $html.Replace('"executable":"index"', '"executable":"index","mainPack":"index.pck?v=' + $revision + '"')
+Set-Content $indexPath $html
+
 $nojekyll = Join-Path $docsDir ".nojekyll"
 if (-not (Test-Path $nojekyll)) {
   New-Item -ItemType File -Path $nojekyll | Out-Null
