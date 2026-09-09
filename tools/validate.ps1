@@ -53,5 +53,10 @@ $expeditionResult = Invoke-GodotStep -GodotArgLine "--headless --path . --script
 Get-Content $outFile, $errFile -ErrorAction SilentlyContinue
 if ($expeditionResult.TimedOut -or $expeditionResult.ExitCode -ne "0") { exit 1 }
 if (Select-String -Path $outFile, $errFile -Pattern "SCRIPT ERROR", "Parse Error" -Quiet -ErrorAction SilentlyContinue) { exit 1 }
+$campaignResult = Invoke-GodotStep -GodotArgLine "--headless --path . --script res://tests/campaign_tests.gd" -StepName "campaign" `
+  -OutFile $outFile -ErrFile $errFile -TimeoutSeconds 60
+Get-Content $outFile, $errFile -ErrorAction SilentlyContinue
+if ($campaignResult.TimedOut -or $campaignResult.ExitCode -ne "0") { exit 1 }
+if (Select-String -Path $outFile, $errFile -Pattern "SCRIPT ERROR", "Parse Error" -Quiet -ErrorAction SilentlyContinue) { exit 1 }
 Write-Host "=== OK ==="
 exit 0

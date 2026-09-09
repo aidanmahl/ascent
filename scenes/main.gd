@@ -7,6 +7,9 @@ const START := Vector2(120, 472)
 const SUMMIT := -4048.0
 const Level = preload("res://src/world/expedition_level.gd")
 const GateCollision = preload("res://src/collision/gate_collision.gd")
+var legacy_campaign := false
+var campaign: CampaignLayout
+var suit_fragments := 0
 var tiles: Dictionary = {}
 var platforms: Array[Rect2] = []
 var enemies: Array[Dictionary] = []
@@ -51,28 +54,33 @@ var rng := RandomNumberGenerator.new()
 @export var layout: LevelLayout
 
 func _ready() -> void:
+	if layout and not layout.platforms.is_empty():
+		legacy_campaign = true
 	rng.seed = 8021
 	_setup_input()
 	_build_level()
 	player.solid_tiles = tiles
-	player.spawn_point = START
-	player.position = START
-	scenery = Scenery.new()
+	player.spawn_point = START if legacy_campaign else CampaignLayout.START
+	player.position = player.spawn_point
+	player.state.position = player.position
+	player.z_index = 5
+	scenery = preload("res://scenes/legacy_scenery.gd").new() if legacy_campaign else Scenery.new()
 	scenery.world = self
 	scenery.z_index = -10
 	add_child(scenery)
 	camera = Camera2D.new()
-	camera.position = Vector2(320, 324)
+	camera.position = Vector2(320, 324) if legacy_campaign else Vector2(320,1813)
 	add_child(camera)
-	arenas = preload("res://scenes/boss_arenas.gd").new()
+	arenas = preload("res://scenes/legacy_boss_arenas.gd").new() if legacy_campaign else preload("res://scenes/boss_arenas.gd").new()
 	arenas.world = self
 	add_child(arenas)
 	if not platforms.is_empty() and not enemies.filter(func(e: Dictionary) -> bool: return e.id == "warden").is_empty():
 		arenas.build()
-	rooms = preload("res://scenes/world_rooms.gd").new()
+	rooms = preload("res://scenes/legacy_world_rooms.gd").new() if legacy_campaign else preload("res://scenes/world_rooms.gd").new()
 	rooms.world = self
 	add_child(rooms)
-	rooms.build()
+	if not legacy_campaign or ((not layout or layout.platforms.is_empty()) and platforms.size() >= 36):
+		rooms.build()
 	var art := preload("res://scenes/world_art.gd").new()
 	art.world = self
 	art.z_index = 2
@@ -123,7 +131,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not started and ((event is InputEventMouseButton and event.pressed) or event.is_action_pressed("jump") or (event is InputEventKey and event.pressed and event.keycode == KEY_ENTER)):
 		started = true
 		player.active = true
-		notify("SALVAGE TRAIL / Follow the ledges to your lost cargo. Three suit integrity points.", 6)
+		notify("WRECK ORCHARD / Find your cutter in the torn bow. TAB opens the map.", 6)
 		sound("save")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("map") and started and not finished:
@@ -146,7 +154,11 @@ func _notification(what: int) -> void:
 		player.active = false
 
 func _build_level() -> void:
-	Level.build(self)
+	if legacy_campaign:
+		Level.build(self)
+	else:
+		campaign = CampaignLayout.new()
+		campaign.build(self)
 
 func add_enemy(kind: String,p: Vector2,id: String,hp: int,left: float = 0,right: float = 0) -> void:
 	enemies.append({"p":p,"home":p,"kind":kind,"id":id,"uid":"%s_%d" % [kind,enemies.size()],"hp":hp,"max_hp":hp,"left":left,"right":right,"dir":1.0,"t":0.0,"hit":0.0,"stun":0.0,"cooldown":1.5,"volley":0,"engaged":false})
@@ -170,7 +182,9 @@ func _physics_process(delta: float) -> void:
 		_update_hostile(delta)
 		_update_challenges(delta)
 		_update_dangers()
-		if locks.get("crown",false) and player.position.distance_to(Vector2(256,SUMMIT-10)) < 42:
+		if not legacy_campaign and player.position.distance_to(CampaignLayout.origin(5)+Vector2(512,276))<60:
+			notify("E / TRANSMIT THE RESCUE SIGNAL",0.2)
+		if locks.get("crown",false) and player.position.distance_to(Vector2(256,SUMMIT-10) if legacy_campaign else CampaignLayout.origin(5)+Vector2(512,276)) < 42 and Input.is_action_just_pressed("interact"):
 			finished = true
 			player.active = false
 			sound("save")
@@ -189,7 +203,13 @@ func _physics_process(delta: float) -> void:
 		target = rooms.active_room.bounds.get_center() + Vector2(0,-70)
 	if not started:
 		target = Vector2(320,324)
-	camera.position = camera.position.lerp(target, 1.0 - exp(-delta * 7))
+	if not legacy_campaign:
+		target = rooms.camera_target()
+	camera.position = camera.position.lerp(target, 1.0 - exp(-delta * 10))
+	# Keep the complete sprite visible even during rapid falls and long dashes.
+	if not legacy_campaign:
+		camera.position.x = clampf(camera.position.x,player.position.x-260,player.position.x+260)
+		camera.position.y = clampf(camera.position.y,player.position.y-140,player.position.y+140)
 	shake = maxf(shake - delta * 15, 0)
 	camera.offset = Vector2(rng.randf_range(-shake,shake), rng.randf_range(-shake,shake))
 	scenery.queue_redraw()
@@ -212,28 +232,34 @@ func _update_pickups() -> void:
 				player.max_ammo = 1
 				notify("PULSE CUTTER / Jump, then S + J near the apex. Land to recharge.",9)
 			"ammo2":
-				player.max_ammo = 2
-				notify("TWIN MAGAZINE / Two recoil pulses per jump. Taller shafts ahead.",7)
+				player.max_ammo = maxi(player.max_ammo,2)
+				notify("TWIN MAGAZINE / Two recoil pulses per jump. Reach the Heartwood nest.",7)
 			"boots":
 				player.wall_unlocked = true
 				notify("KICK BOOTS / SPACE at a wall. One kick per landing. No wall reloads.",8)
 			"dash":
 				player.dash_unlocked = true
 				player.state.dash_available = true
-				notify("VECTOR THRUSTER / Direction + SHIFT. Dash through blue membranes.",8)
+				notify("SAIL THRUSTER / LEFT or RIGHT + SHIFT. A long horizontal dash.",8)
 			"ammo3":
 				player.max_ammo = 3
 				notify("TRIPLE MAGAZINE / Three airborne shots can overload a relay core.",8)
 			"fragment":
-				player.max_health = mini(4,player.max_health+1)
-				notify("SUIT FRAGMENT / Maximum integrity increased.",6)
+				suit_fragments += 1
+				player.max_health = 3 + int(suit_fragments >= 2)
+				notify("SUIT FRAGMENT %d/2 / %s" % [suit_fragments,"Integrity increased." if suit_fragments >= 2 else "Find the matching fragment."],6)
+			"core":
+				locks.core = true
+				notify("HEARTWOOD RESTORED / Repair the root pump to wake the upper winds.",6)
 		player.health = player.max_health
 		player.ammo = player.max_ammo
 		burst(pickup.p,Color("80f2d2"),30)
 		sound("save")
 	for i in range(checkpoints.size()):
-		if i != checkpoint_index and player.position.distance_to(checkpoints[i]) < 25 and player.state.on_floor:
+		if (i != checkpoint_index or Input.is_action_just_pressed("interact")) and player.position.distance_to(checkpoints[i]) < 25 and player.state.on_floor:
 			checkpoint_index = i
+			if not legacy_campaign:
+				rooms.visited_anchors[i] = true
 			player.spawn_point = checkpoints[i]
 			player.health = player.max_health
 			notify("SIGNAL ANCHOR / Suit restored. R retries this section.",4)
@@ -244,6 +270,8 @@ func _update_enemies(delta: float) -> void:
 	boss_name = ""
 	for e: Dictionary in enemies:
 		if e.hp <= 0:
+			continue
+		if not legacy_campaign and (e.get("room",0) != rooms.active_room.get("id",0) or rooms.entry_grace > 0):
 			continue
 		e.hit = maxf(0,e.hit-delta)
 		e.stun = maxf(0,float(e.get("stun",0))-delta)
@@ -408,7 +436,7 @@ func _update_bullets(delta: float) -> void:
 					relay.timer = 5.0
 					b.life = 0
 					burst(relay.p,Color("80f2d2"),8)
-			if not locks.get("airlock",false) and b.p.distance_to(capacitor.p) < 13:
+			if not capacitor.is_empty() and not locks.get("airlock",false) and b.p.distance_to(capacitor.p) < 13:
 				if b.airborne and not player.state.on_floor and b.flight == player.flight_id:
 					if capacitor.flight != b.flight:
 						capacitor.hits = 0
@@ -432,6 +460,8 @@ func _update_bullets(delta: float) -> void:
 			bullets.remove_at(i)
 
 func _update_challenges(delta: float) -> void:
+	if not legacy_campaign:
+		return
 	var all_lit := true
 	for relay: Dictionary in switches:
 		relay.timer = maxf(0,relay.timer-delta)
@@ -462,7 +492,7 @@ func damage_enemy(enemy: Dictionary, amount: int, stagger: bool) -> void:
 			locks[enemy.id] = true
 			hostile.clear()
 			player.health = player.max_health
-			notify("GUARDIAN DEFEATED / Salvage released. Claim your upgrade.",6)
+			notify("GUARDIAN QUIETED / The passage beyond is open.",6)
 
 func wall_kicked(p: Vector2) -> void:
 	for plate: Dictionary in kick_plates:
@@ -494,6 +524,11 @@ func on_respawn() -> void:
 	hostile.clear()
 	# Unfinished encounters reset completely; completed vaults stay open.
 	for e: Dictionary in enemies:
+		if e.kind != "boss" and e.hp>0:
+			e.hp = e.max_hp
+			e.p = e.home
+			e.stun = 0.0
+			e.cooldown = 1.5
 		if e.kind == "boss" and not locks.get(e.id,false):
 			e.hp = e.max_hp
 			e.cooldown = 1.5
@@ -502,7 +537,9 @@ func on_respawn() -> void:
 			e.p = e.home
 			e.engaged = false
 			e.erase("target")
-	camera.position = Vector2(320,clampf(player.position.y-48,SUMMIT,324))
+	camera.position = Vector2(320,clampf(player.position.y-48,SUMMIT,324)) if legacy_campaign else rooms.camera_target()
+	if not legacy_campaign:
+		rooms.update_membership()
 	notify("SUIT RECONSTRUCTED / Equipment retained. Unfinished guardians restored.",4)
 
 func sound(kind: String) -> void:
@@ -510,6 +547,8 @@ func sound(kind: String) -> void:
 		audio.play_effect(kind)
 
 func zone() -> String:
+	if not legacy_campaign and rooms and not rooms.active_room.is_empty():
+		return rooms.active_room.name
 	if player.position.y > 180:
 		return "01 / THE SALVAGE TRAIL"
 	if player.position.y > -600:
@@ -526,7 +565,7 @@ func zone() -> String:
 
 func _draw() -> void:
 	for checkpoint in checkpoints:
-		var lit := checkpoints.find(checkpoint) <= checkpoint_index
+		var lit: bool = checkpoints.find(checkpoint) <= checkpoint_index if legacy_campaign else rooms.visited_anchors.has(checkpoints.find(checkpoint))
 		draw_rect(Rect2(checkpoint + Vector2(-6,-18),Vector2(12,26)),Color("354e59"))
 		draw_rect(Rect2(checkpoint + Vector2(-3,-16),Vector2(6,18)),Color("78eac5") if lit else Color("587b80"))
 		draw_circle(checkpoint + Vector2(0,-20),3,Color("c5ffe3") if lit else Color("9caeaa"))
@@ -579,10 +618,11 @@ func _draw() -> void:
 		var color: Color = p.color
 		color.a = minf(1,p.life * 4)
 		draw_rect(Rect2(p.p.round(),Vector2(2,2)),color)
-	# Rescue transmitter on the final island.
-	draw_rect(Rect2(253,SUMMIT-46,6,46),Color("afc5bf"))
-	draw_rect(Rect2(244,SUMMIT-6,24,6),Color("637f80"))
-	draw_circle(Vector2(256,SUMMIT-47),4,Color("ffdf98"))
+	# Transmitter is physically on Beacon's upper branch.
+	var beacon := Vector2(256,SUMMIT) if legacy_campaign else CampaignLayout.origin(5)+Vector2(512,288)
+	draw_rect(Rect2(beacon+Vector2(-3,-46),Vector2(6,46)),Color("afc5bf"))
+	draw_rect(Rect2(beacon+Vector2(-12,-6),Vector2(24,6)),Color("637f80"))
+	draw_circle(beacon+Vector2(0,-47),4,Color("ffdf98"))
 	for i in range(3):
 		var radius := fmod(time * 18 + i * 14,42)
-		draw_arc(Vector2(256,SUMMIT-47),radius,PI,TAU,24,Color(0.7,1,0.85,(1-radius/42)*0.45),1)
+		draw_arc(beacon+Vector2(0,-47),radius,PI,TAU,24,Color(0.7,1,0.85,(1-radius/42)*0.45),1)

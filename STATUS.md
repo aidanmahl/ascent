@@ -1,5 +1,38 @@
 # Status
 
+## Implemented - connected Metroidvania campaign (2026-09-08)
+
+- Replaced the default shaft/teleport expedition with 25 rooms across a 5x5
+  world and 37 shared openings. Rooms connect above, below and sideways with
+  continuous movement, return loops, shortcuts and physical pump/wind lifts.
+- Added original environment art: wreck orchard, root nests, bell cavern,
+  hanging sails, wind harps, hollow tree, waterworks, archive and observatory.
+  Terrain edges, equipment and machinery have new artwork.
+- Removed upward/diagonal dash. Horizontal dash uses 10.5 px/frame for 16 frames;
+  the measured jump/dash transfer increased from about 84 to 236 px without
+  increasing its jump apex. Boot kick wells, recoil climbs and long gaps replace
+  the previous repeated red-wall progression.
+- Rebuilt suit pickup locations inside the continuous world. Both fragments
+  have supported floors, visible player/camera placement and persistent pickup
+  state; collecting both adds one health capacity. Early free shafts have
+  catch ledges for returns before boots.
+- Boss encounters occupy physical rooms. Machinery restoration and traversal
+  upgrades drive exploration; optional encounters and side rewards remain.
+- Updated the full spatial blueprint in IMPLEMENTATION_PLAN.md and current
+  controls/development notes in README.md and DESIGN.md.
+
+Validation: tools/validate.cmd passes movement, historical fixture and new
+campaign suites. A fresh automated movement route collects upgrades, restores
+machinery, rides the lifts and reaches the Beacon interaction. Guardian defeats
+in that route are supplied by the harness, so this is not a combat playthrough.
+Native viewport captures were inspected for all 25 rooms, the map, and suit
+pickup/retry states. A local Web export is included; its HTTP assets were checked.
+Native input automation and browser UI were unavailable, so manual browser
+playtesting and combat balance remain the next review step. No deployment made.
+
+The entries below are historical milestones and may describe superseded behavior.
+
+
 ## Done — Milestone 3: double jump, dash
 - **Fixed a real visibility bug reported during play-testing**, ahead of
   the milestone itself: the placeholder floor/walls existed only as

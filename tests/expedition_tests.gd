@@ -20,8 +20,8 @@ func reach(source: Rect2,target: Rect2,cells: int,dash: bool,boots: bool) -> boo
 		for shot_start in [-1,1,6,12,18,24]:
 			if cells == 0 and shot_start != -1:
 				continue
-			for dash_at in ([-1,6,18,30,42] if dash else [-1]):
-				for mode in ([0,1,2] if boots else [0,2]):
+			for dash_at in ([-1,2,6,10,14,18,22,26,30,34,38,42,46,50] if dash else [-1]):
+				for mode in ([0,1,2,3] if boots else [0,2]):
 					var s := MovementState.new()
 					s.double_jump_enabled = false
 					s.wall_jump_enabled = boots
@@ -33,6 +33,7 @@ func reach(source: Rect2,target: Rect2,cells: int,dash: bool,boots: bool) -> boo
 					# so both positive routes and sequence-break checks model play.
 					var launch_slot := (start_x - (int(source.position.x) + 8)) / 16
 					s.velocity.x = 0.0 if launch_slot % 2 == 0 else signf(target.get_center().x-source.get_center().x) * cfg.max_run_speed
+					var breached: Dictionary = {}
 					var remaining := cells
 					for frame in range(160):
 						var dx := target.get_center().x-s.position.x
@@ -47,12 +48,22 @@ func reach(source: Rect2,target: Rect2,cells: int,dash: bool,boots: bool) -> boo
 							s.move_left = true
 							s.move_right = false
 						s.dash_pressed = frame == dash_at
+						if mode == 3 and s.dash_pressed:
+							s.move_left = dx > 0
+							s.move_right = dx < 0
 						s.look_up = s.dash_pressed
 						var previous := s.position
 						PlayerMovement.process(s,cfg,w.tiles)
-						for gate: Dictionary in w.gates:
-							if gate.kind == "phase" and int(s.timers.get("dash_timer",0)) <= 0 and Rect2(s.position-Vector2(4,7),Vector2(8,14)).intersects(gate.rect):
-								s.position = previous
+						for gate_index in range(w.gates.size()):
+							var gate: Dictionary = w.gates[gate_index]
+							if gate.kind != "phase" or breached.has(gate_index):
+								continue
+							if not GateCollision.swept_touches(previous,s.position,gate.rect,cfg.collider_size):
+								continue
+							if int(s.timers.get("dash_timer",0))>0:
+								breached[gate_index] = true
+							else:
+								s.position = GateCollision.nearest_clear_position(s.position,gate.rect,cfg.collider_size,s.velocity)
 								s.velocity.y = maxf(1,s.velocity.y)
 						if shot_start >= 0 and frame >= shot_start and (frame-shot_start)%12 == 0 and remaining > 0 and not s.on_floor:
 							Player.apply_recoil(s,Vector2.DOWN)
@@ -64,7 +75,14 @@ func reach(source: Rect2,target: Rect2,cells: int,dash: bool,boots: bool) -> boo
 	return false
 
 func run() -> void:
+	var watchdog := Timer.new()
+	watchdog.wait_time = 50
+	watchdog.one_shot = true
+	watchdog.timeout.connect(func() -> void: quit(1))
+	root.add_child(watchdog)
+	watchdog.start()
 	w = load("res://scenes/main.tscn").instantiate()
+	w.legacy_campaign = true
 	root.add_child(w)
 	w.muted = true
 	w.set_physics_process(false)

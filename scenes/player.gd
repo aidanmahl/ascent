@@ -51,7 +51,7 @@ func _physics_process(delta: float) -> void:
 	state.jump_released = Input.is_action_just_released("jump")
 	state.dash_pressed = dash_unlocked and Input.is_action_just_pressed("dash")
 	state.reset_pressed = false
-	if Input.is_action_just_pressed("reset") or position.y > minf(kill_plane_y, spawn_point.y + 450):
+	if Input.is_action_just_pressed("reset") or position.y > (minf(kill_plane_y, spawn_point.y + 450) if get_parent().legacy_campaign else kill_plane_y):
 		respawn()
 	state.double_jump_available = false
 	state.double_jump_enabled = false
@@ -159,6 +159,10 @@ func hurt(from: Vector2) -> void:
 func respawn() -> void:
 	PlayerMovement._reset(state, spawn_point)
 	position = spawn_point
+	previous_position = spawn_point
+	velocity = Vector2.ZERO
+	shot_timer = 0
+	recharge_timer = 0
 	health = max_health
 	ammo = max_ammo
 	invincible = 1.5

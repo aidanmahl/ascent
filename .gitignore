@@ -14,3 +14,7 @@ tools/capture/capture_config.json
 .idea/
 nul
 .claude/settings.local.json
+# Generated campaign route-search and capture artifacts
+tools/campaign_route.json
+tools/campaign_resume.json
+tools/campaign_traces.json

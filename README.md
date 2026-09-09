@@ -1,53 +1,69 @@
-# Ascent � First Light
+﻿# Ascent — The Orbital Garden
 
-A playable Godot 4.7 pixel-art platformer about an astronaut climbing out of the cave where their ship crashed.
+A Godot 4.7.1 exploration platformer about an astronaut finding a way home through
+a ruined garden. The default campaign is a new 3200 × 2400 world: 25 rooms arranged
+above, below and beside one another, with 37 physical connections.
 
-Play: https://aidanmahl.github.io/ascent/
+Walk, jump, drop and dash across room boundaries. The world never teleports you
+through an entrance. Explore the roots for boots, climb the western garden for
+the horizontal thruster, and return through shortcuts with new movement options.
 
 ## Controls
 
 | Action | Input |
 | --- | --- |
 | Move | A/D or left/right arrows |
-| Jump / wall kick after boot recovery | Space or Z; release early for a shorter jump |
-| Aim and fire | Mouse + left click |
-| Keyboard fire | J or C; W/S aims up/down |
-| Recoil lift | Jump, then hold S + J to shoot downward |
-| Directional dash after recovery | W/A/S/D + Shift, or arrow keys + X |
-| Recover at latest checkpoint | R |
-| Pause | Escape or P |
-| Mute | M |
+| Jump / boot kick | Space or Z; release for a shorter jump |
+| Aim / fire | Mouse / left click |
+| Keyboard fire | J or C; W/S selects vertical aim |
+| Recoil lift | Jump, then S + J near the apex |
+| Horizontal dash | Shift or X; hold left/right, otherwise use last movement facing |
+| Slash / projectile parry | Right click or K |
+| World map | Tab |
+| Rest at an anchor / transmit at Beacon | E |
+| Retry at selected anchor | R |
+| Pause / mute | Escape or P / M |
 
-Climb a 4,520-pixel expedition across seven regions. Start unarmed with three health. There is no double jump.
+There is no upward or diagonal dash, and no double jump. Landing restores recoil
+cells and the one-per-flight wall kick. Dash preserves existing vertical motion.
+The two suit fragments together increase integrity from three to four.
 
-- Complete the salvage trail for a one-cell pulse cutter. Fire downward to extend your jump; **only landing refills ammo and dash**.
-- Defeat the Hollow Warden for a two-cell magazine.
-- Cross the relay partition and shoot both targets within five seconds to earn magnetic boots. Boots allow **one weakened wall kick per landing**.
-- Defeat the Glass Sentinel for the vector thruster. Direction + Shift passes blue membranes.
-- Defeat Rootheart for the third magazine cell. Land three hits on the core during a single flight to open the canopy.
-- Defeat the Crown and reach the rescue transmitter.
+Boots, the thruster and the second cell are exploration finds. Repair Rootheart's
+pump and restore the Heartwood core in either order to activate the upper wind
+lifts. The Warden and Sentinel are optional; Sentinel rewards a third cell.
+Crown guards the final bridge to the transmitter. Equipment and world changes
+persist across death for the current session; closing the game starts a fresh run.
 
-Drifters fire slow straight spreads. Your shots destroy hostile projectiles. Spikes and telegraphed geysers punish careless landings. Signal anchors restore health and record recovery locations; unfinished bosses reset when you recover, while earned equipment and opened vaults persist for the session.
-
-See [DESIGN.md](DESIGN.md) for the current progression and balance rules.
+The new art is drawn locally: a broken spacecraft, a suspended cistern, a giant
+bell, sail terraces, resonators, tree hollows, machinery, an observatory, vegetation,
+seed lights and water. Scenery and collision use the same room coordinates.
 
 ## Development
 
-Open `project.godot` in Godot 4.7.1. The main scene is `scenes/main.tscn`.
+Open `project.godot`; main scene: `scenes/main.tscn`.
 
-- `src/world/expedition_level.gd`: authored landings, challenges, hazards and encounter placement.
-- `scenes/main.gd`: enemies, projectiles, progression and checkpoints.
-- `scenes/world_art.gd`: equipment, cages, relay cores, membranes and hazards.
-- `scenes/player.gd`: input, pulse recoil, astronaut animation, health and movement integration.
-- `scenes/scenery.gd`: deterministic pixel scenery, wreck, vegetation and parallax.
-- `scenes/hud.gd`: title, HUD, pause and completion screens.
-- `scenes/sound.gd`: synthesized effects and ambient audio; no external assets.
-- `src/movement/`: existing deterministic, tested movement and collision core. `expedition_config.tres` tunes the live game separately from the historical baseline.
+- `src/world/campaign_layout.gd`: room bounds, shared openings, terrain, natural
+  movement gates, pickups, machinery and encounters.
+- `scenes/world_rooms.gd`: continuous room discovery, camera targeting and physical lifts.
+- `scenes/scenery.gd`, `world_art.gd`: original environment and equipment art.
+- `scenes/boss_arenas.gd`: encounters in their real world locations.
+- `src/movement/`: deterministic movement; `expedition_config.tres` tunes gameplay.
+- `tests/campaign_tests.gd`: geometry, upgrade, camera and ability-gate checks.
+- `tests/campaign_navigator.gd`, `campaign_replay.gd`: bounded movement route search.
 
-Run `tools/validate.cmd` with `godot_console` on PATH. This runs the original 55 movement tests and 71 expedition checks, including all 43 route connections and negative ability-gate tests, weapon collision/recoil, progression, recovery and damage protection.
+`tools/validate.cmd` runs the movement, historical expedition and new campaign
+suites. Historical rooms are an explicit `legacy_campaign` fixture and are never
+built in the default campaign. Nonempty custom `LevelLayout` resources retain
+an isolated authoring mode.
 
-Run `tools/build-web.cmd` to export the single-threaded browser build into `docs/`. Commit the source and export together, then push `main`; GitHub Pages serves `docs/`. The existing GitHub Pages deployment is retained.
+`tools/check-campaign.cmd` searches a fresh route through the campaign in bounded
+batches, collects the real upgrades, and checks the final interaction. Its boss
+defeats are supplied by the harness, so this is a traversal check rather than a
+combat playthrough.
 
-Visual capture: `godot_console --path . --audio-driver Dummy --script res://tools/capture/expedition_capture.gd`. Captures are written to the ignored `tools/screenshots/` folder.
+`tools/build-web.cmd` exports a local browser build to `docs/`. It does not deploy.
+Render QA uses `tools/capture/campaign_capture.gd` through the timeout wrapper;
+images are saved in the ignored `tools/screenshots/campaign/` folder.
 
-This first chapter targets desktop keyboard/mouse browsers. Progress lasts for the current play session. The older planning/handoff documents describe the previous movement gym and are retained as history.
+See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for the full spatial blueprint
+and [DESIGN.md](DESIGN.md) for runtime contracts. Older movement plans are history.

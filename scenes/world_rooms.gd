@@ -1,91 +1,78 @@
 extends Node2D
 
-## Compact, authored detours break the expedition's old one-way rhythm. They
-## sit off the shaft and use explicit door links, so they remain useful on a
-## return visit without relying on a living enemy or a precision fall.
 var world: Node2D
 var rooms: Array[Dictionary] = []
 var active_room: Dictionary = {}
 var discovered: Dictionary = {}
-
-const MAP_NODES := [
-	"WRECK", "JUNCTION", "HOLLOW", "WARDEN", "RELAY", "BOOTS",
-	"CHIMNEY", "SENTINEL", "GLASS", "RESERVOIR", "ROOTHEART",
-	"CANOPY", "STORM", "CROWN", "SUMMIT", "ARCHIVE", "CISTERN", "ROOST"
-]
+var visited_anchors: Dictionary = {}
+var entry_grace := 0.0
 
 func build() -> void:
-	# source platform index, far-away room tile origin, and local floor row.
-	_add_room("archive",7,Vector2i(-74,-10),"ARCHIVE / RECOIL VAULT",true)
-	_add_room("cistern",25,Vector2i(-74,-126),"CISTERN / PHASE GARDEN",true)
-	_add_room("roost",35,Vector2i(-74,-198),"ROOST / WIND KICKS",false)
+	rooms = world.campaign.rooms
+	update_membership()
 
-func _add_room(id: String, source_index: int, origin: Vector2i, title: String, fragment: bool) -> void:
-	var source: Rect2 = world.platforms[source_index]
-	var floor_row := origin.y + 28
-	var bounds := Rect2(origin.x*16,origin.y*16,640,480)
-	# A wide floor, side walls, distinct raised cover and a high return perch.
-	world._fill(origin.x,origin.x+39,floor_row,floor_row+2)
-	world._fill(origin.x,origin.x+1,origin.y, floor_row)
-	world._fill(origin.x+38,origin.x+39,origin.y, floor_row)
-	world._fill(origin.x+7,origin.x+12,floor_row-5,floor_row-4)
-	world._fill(origin.x+20,origin.x+25,floor_row-9,floor_row-8)
-	world._fill(origin.x+30,origin.x+34,floor_row-4,floor_row-3)
-	var entry := Vector2(source.end.x-20,source.position.y-12)
-	var spawn := Vector2((origin.x+4)*16,(floor_row)*16-12)
-	var exit := Vector2((origin.x+35)*16,(floor_row)*16-12)
-	var room := {"id":id,"title":title,"entry":entry,"spawn":spawn,"exit":exit,"bounds":bounds,"source":source_index}
-	rooms.append(room)
-	# One crawler and one ranged role make each detour a compact combat space.
-	world.add_enemy("crawler",Vector2((origin.x+10)*16,(floor_row-5)*16-8),id+"_crawler",2,(origin.x+7)*16,(origin.x+12)*16)
-	world.add_enemy("sentry",Vector2((origin.x+23)*16,(floor_row-9)*16-16),id+"_sentry",3)
-	if id == "roost":
-		world.add_enemy("hunter",Vector2((origin.x+32)*16,(floor_row-4)*16-18),id+"_hunter",3,(origin.x+30)*16,(origin.x+34)*16)
-	if fragment:
-		world.pickups.append({"p":Vector2((origin.x+23)*16,(floor_row-9)*16-28),"kind":"fragment","lock":"","label":"SUIT FRAGMENT","taken":false})
+func update_membership() -> void:
+	var id := CampaignLayout.room_at(world.player.position)
+	if id > 0 and (active_room.is_empty() or active_room.id != id):
+		active_room = rooms[id-1]
+		discovered[id] = true
+		entry_grace = 1.0
+		if world.started:
+			world.notify(active_room.name.to_upper(),3)
+	for edge: Dictionary in world.campaign.edges:
+		if int(edge.a)==id or int(edge.b)==id:
+			edge.seen = true
 
-func update(_delta: float) -> void:
-	if active_room.is_empty():
-		for room: Dictionary in rooms:
-			if world.player.position.distance_to(room.entry) < 28:
-				world.notify("E / EXPLORE " + room.title,0.1)
-				if Input.is_action_just_pressed("interact"):
-					enter(room)
-				break
-	elif world.player.position.distance_to(active_room.exit) < 30:
-		world.notify("E / RETURN TO THE ASCENT",0.1)
-		if Input.is_action_just_pressed("interact"):
-			leave()
+func update(delta: float) -> void:
+	update_membership()
+	entry_grace = maxf(0,entry_grace-delta)
+	for mechanism: Dictionary in world.campaign.mechanisms:
+		if world.locks.get(mechanism.flag,false):
+			continue
+		if not mechanism.needs.is_empty() and not world.locks.get(mechanism.needs,false):
+			continue
+		if world.player.position.distance_to(mechanism.p)<30:
+			world.locks[mechanism.flag] = true
+			world.notify(mechanism.label,5)
+			world.sound("save")
+	world.locks["wind"] = world.locks.get("pump",false) and world.locks.get("core",false)
+	# Kinematic platforms move the body only while supported, without resetting
+	# velocity/resources or changing rooms. Tiles remain the static collision source.
+	for lift: Dictionary in world.campaign.lifts:
+		lift.last_y = lift.y
+		if not world.locks.get(lift.flag,false):
+			continue
+		lift.phase += delta * 0.65
+		lift.y = lerpf(lift.bottom,lift.top,(1.0-cos(lift.phase))*0.5)
+		var p: Player = world.player
+		var feet := p.position.y+8
+		if absf(p.position.x-float(lift.x))<60 and p.state.velocity.y>=0 and feet>=float(lift.last_y)-7 and feet<=float(lift.last_y)+12:
+			p.position.y = lift.y-8
+			p.state.position = p.position
+			p.state.velocity.y = 0
+			p.state.on_floor = true
+			p.state.dash_available = p.dash_unlocked
+			p.state.wall_kick_available = true
+			p.ammo = p.max_ammo
 	queue_redraw()
 
-func enter(room: Dictionary) -> void:
-	active_room = room
-	discovered[room.id] = true
-	teleport(room.spawn)
-	world.player.spawn_point = room.spawn
-	world.player.health = world.player.max_health
-	world.hostile.clear()
-	world.bullets.clear()
-	world.notify(room.title + " / A side route with a way back.",4)
-
-func leave() -> void:
-	var return_to: Vector2 = active_room.entry
-	active_room = {}
-	teleport(return_to)
-
-func teleport(point: Vector2) -> void:
-	PlayerMovement._reset(world.player.state,point)
-	world.player.position = point
-	world.player.previous_position = point
-	world.player.ammo = world.player.max_ammo
-	world.camera.position = active_room.bounds.get_center()+Vector2(0,-70) if not active_room.is_empty() else Vector2(320,point.y-48)
+func camera_target() -> Vector2:
+	var p: Player = world.player
+	var lead := clampf(p.state.velocity.x*9,-48,48)
+	return Vector2(clampf(p.position.x+lead,320,2880),clampf(p.position.y-35,180,2220))
 
 func _draw() -> void:
-	for room: Dictionary in rooms:
-		var portal: Vector2 = room.exit if not active_room.is_empty() and active_room.id == room.id else room.entry
-		draw_rect(Rect2(portal-Vector2(10,25),Vector2(20,30)),Color("1d3340"))
-		draw_rect(Rect2(portal-Vector2(10,25),Vector2(20,30)),Color("91d4b6"),false,2)
-		draw_string(ThemeDB.fallback_font,portal+Vector2(-4,-10),"E",HORIZONTAL_ALIGNMENT_LEFT,-1,10,Color("d9f3cf"))
-		if not active_room.is_empty() and active_room.id == room.id:
-			draw_rect(room.bounds,Color("a4dfbd"),false,2)
-			draw_string(ThemeDB.fallback_font,room.bounds.position+Vector2(20,30),room.title,HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("a4dfbd"))
+	for lift: Dictionary in world.campaign.lifts:
+		var tint := Color("c6ddac") if world.locks.get(lift.flag,false) else Color("526565")
+		draw_line(Vector2(lift.x,lift.top),Vector2(lift.x,lift.bottom),Color("456564"),2)
+		draw_rect(Rect2(lift.x-64,lift.y,128,8),Color("254747"))
+		draw_line(Vector2(lift.x-64,lift.y),Vector2(lift.x+64,lift.y),tint,3)
+		for x in [-36,36]:
+			draw_circle(Vector2(lift.x+x,lift.y+7),4,tint)
+	for mechanism: Dictionary in world.campaign.mechanisms:
+		var p: Vector2 = mechanism.p
+		var lit: bool = world.locks.get(mechanism.flag,false)
+		draw_arc(p,17,0,TAU,12,Color("9ae7c2") if lit else Color("d4ae76"),3)
+		for n in range(4):
+			var d := Vector2.RIGHT.rotated(n*PI/2+world.time*(0.4 if lit else 0))
+			draw_line(p-d*12,p+d*12,Color("738f84"),2)

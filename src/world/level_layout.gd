@@ -2,7 +2,7 @@ class_name LevelLayout
 extends Resource
 
 ## Inspector-friendly override for the authored expedition. Leave platforms
-## empty to use the built-in First Light route. Once populated, each Rect2 is
+## empty to use the built-in Orbital Garden campaign. Once populated, each Rect2 is
 ## one solid platform in world pixels: (x, y, width, height).
 @export_category("Platforms")
 @export var platforms: Array[Rect2] = []

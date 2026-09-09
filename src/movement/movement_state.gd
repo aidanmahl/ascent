@@ -7,8 +7,7 @@ var velocity: Vector2 = Vector2.ZERO
 ## Input flags, set by the shell each frame from raw engine input.
 var move_left: bool = false
 var move_right: bool = false
-## W/S - primarily camera look-offset (not yet implemented), also used
-## for 8-way dash direction snapping per SPEC.md section 4.
+## W/S are keyboard weapon aim. Dash ignores both vertical look flags.
 var look_up: bool = false
 var look_down: bool = false
 ## Just-pressed/just-released edges for this frame only (the shell derives

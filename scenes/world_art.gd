@@ -3,7 +3,7 @@ var world: Node2D
 const MINT := Color("8ee4c3")
 
 func _draw() -> void:
-	if not world.kick_plates.is_empty():
+	if world.legacy_campaign and not world.kick_plates.is_empty():
 		draw_string(ThemeDB.fallback_font,Vector2(275,-1040),"RECOIL UP / KICK OFF THE WALL",HORIZONTAL_ALIGNMENT_LEFT,-1,9,Color("cba8ef"))
 	for plate: Dictionary in world.kick_plates:
 		var color := MINT if world.locks.get(plate.lock,false) else Color("cba8ef")
@@ -17,7 +17,20 @@ func _draw() -> void:
 			continue
 		if gate.get("breached",false) or (gate.kind == "seal" and world.locks.get(gate.lock,false)):
 			continue
-		var c := Color("83cbea") if gate.kind == "phase" else Color("d18d91")
+		if not world.legacy_campaign:
+			draw_rect(r,Color("344f54"))
+			draw_rect(r.grow(-3),Color("64766c"),false,2)
+			var c := r.get_center()
+			draw_circle(c,8,Color("b9a579"))
+			draw_circle(c,4,Color("405853"))
+			if r.size.x>r.size.y:
+				for x in range(int(r.position.x)+8,int(r.end.x),16):
+					draw_line(Vector2(x,r.position.y+4),Vector2(x,r.end.y-4),Color("91a18a"),2)
+			else:
+				for y in range(int(r.position.y)+8,int(r.end.y),16):
+					draw_line(Vector2(r.position.x+4,y),Vector2(r.end.x-4,y),Color("91a18a"),2)
+			continue
+		var c := Color("83cbea") if gate.kind == "phase" else Color("a7a17b")
 		draw_rect(r,Color(c,0.18))
 		for x in range(int(r.position.x),int(r.end.x),8):
 			var y := r.position.y+8+sin(world.time*4+x)*3
@@ -67,6 +80,16 @@ func _draw() -> void:
 					draw_rect(Rect2(p+Vector2(-11+i*13,-7),Vector2(7,13)),Color("c6bec6"))
 					draw_rect(Rect2(p+Vector2(-11+i*13,3),Vector2(11,5)),Color("a280ac"))
 					draw_rect(Rect2(p+Vector2(-10+i*13,7),Vector2(9,2)),Color("e2c2d8"))
+			"fragment":
+				var shell := PackedVector2Array([p+Vector2(-9,-8),p+Vector2(4,-11),p+Vector2(10,-3),p+Vector2(6,9),p+Vector2(-6,11),p+Vector2(-11,2)])
+				draw_colored_polygon(shell,Color("839fa7"))
+				draw_polyline(shell,Color("d4e9d5"),2)
+				draw_line(p+Vector2(-4,-5),p+Vector2(4,5),MINT,3)
+				draw_circle(p,3,Color("f8e6a7"))
+			"core":
+				draw_circle(p,11,MINT)
+				draw_circle(p,6,Color("e6f8c6"))
+				draw_arc(p,19,world.time,world.time+4,24,MINT,1)
 			"dash":
 				draw_rect(Rect2(p+Vector2(-6,-9),Vector2(12,19)),Color("9ebdb8"))
 				for side in [-1,1]:
@@ -85,7 +108,7 @@ func _draw() -> void:
 		draw_circle(p,4,MINT if relay.lit else Color("cb967f"))
 		if relay.lit:
 			draw_arc(p,10,-PI/2,-PI/2+TAU*relay.timer/5,16,MINT,1)
-	var core: Vector2 = world.capacitor.p
+	var core: Vector2 = world.capacitor.get("p",Vector2(-10000,-10000))
 	if core.y > top and core.y < bottom:
 		draw_circle(core,15,Color("3e5565"))
 		for i in range(3):

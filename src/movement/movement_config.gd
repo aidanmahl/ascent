@@ -43,19 +43,12 @@ extends Resource
 ## suppressed in favor of rule 2-style gradual fighting (4c), how long
 ## before dash_cooldown starts counting, and how long the same-frame jump
 ## suppression (4d) can matter.
-@export var dash_duration_frames: int = 12
-@export var dash_speed: float = 7.0
+@export var dash_duration_frames: int = 16
+@export var dash_speed: float = 10.5
 ## Frames after a dash's nominal duration ends before another can start,
 ## on top of needing dash_available (refilled separately by ground/wall
 ## contact).
 @export var dash_cooldown_frames: int = 6
-## Multiplier applied to the Y component only of a diagonal (nonzero X)
-## upward dash's launch velocity - compensates for gravity now applying
-## throughout the dash (rule 4a) so diagonal-up dashes retain their
-## intended reach. Straight-up dashes (zero X) are NOT boosted - they were
-## already strong enough before gravity applied continuously; gravity
-## applying now is their correction, not something to compensate for.
-@export var dash_diagonal_up_vertical_boost: float = 1.4
 
 @export_group("Wall")
 @export var wall_slide_max_fall_speed: float = 1.5

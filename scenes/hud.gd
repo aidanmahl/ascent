@@ -47,14 +47,13 @@ func _draw() -> void:
 		draw_rect(Rect2(0,0,640,360),Color(0.03,0.08,0.11,0.78))
 		panel(Rect2(140,92,360,174))
 		if world.map_open:
-			text(Vector2(275,116),"EXPEDITION MAP",18)
-			text(Vector2(185,151),"WRECK -- HOLLOW -- RELAY -- GLASS -- CANOPY",10,MINT)
-			text(Vector2(185,174),"WARDEN  >  BOOTS  >  SENTINEL  >  ROOTHEART  >  CROWN",10,CREAM)
-			text(Vector2(220,219),"TAB / ESC TO CLOSE",12,MINT)
+			_draw_map()
 		else:
 			text(Vector2(258,126),"SIGNAL HELD",22)
-			text(Vector2(176,175),"RMB / K SLASH + PARRY   TAB MAP",11,MINT)
-			text(Vector2(226,211),"ESC / P TO RESUME",12,MINT)
+			text(Vector2(161,157),"A/D MOVE   SPACE JUMP   SHIFT HORIZONTAL DASH",10,MINT)
+			text(Vector2(161,179),"LMB FIRE   S+J RECOIL   RMB/K SLASH + PARRY",10,MINT)
+			text(Vector2(161,201),"TAB MAP   E REST / SIGNAL   R RETRY",10,MINT)
+			text(Vector2(226,239),"ESC / P TO RESUME",12,MINT)
 	if world.finished:
 		draw_rect(Rect2(0,0,640,360),Color(0.03,0.08,0.11,0.8))
 		panel(Rect2(124,74,392,218))
@@ -76,3 +75,50 @@ func _title() -> void:
 	panel(Rect2(41,189,221,36))
 	text(Vector2(66,212),"ENTER / CLICK TO BEGIN",14,MINT)
 	text(Vector2(42,267),"CHAPTER ONE  /  FIRST LIGHT",10,MINT)
+
+func _draw_map() -> void:
+	panel(Rect2(22,22,596,316))
+	text(Vector2(40,47),"THE ORBITAL GARDEN",18,MINT)
+	text(Vector2(440,46),"TAB / ESC  CLOSE",10)
+	if world.legacy_campaign:
+		text(Vector2(60,90),"Legacy traversal fixture",12)
+		return
+	var base := Vector2(68,70)
+	var cell := Vector2(100,46)
+	for edge: Dictionary in world.campaign.edges:
+		if not edge.seen:
+			continue
+		var a: int = edge.a-1
+		var b: int = edge.b-1
+		var pa := base+Vector2(a%5,a/5)*cell+Vector2(44,18)
+		var pb := base+Vector2(b%5,b/5)*cell+Vector2(44,18)
+		var unlocked: bool = edge.requires.is_empty() or world.locks.get(edge.requires,false)
+		if edge.requires=="boots": unlocked = world.player.wall_unlocked
+		if edge.requires=="dash": unlocked = world.player.dash_unlocked
+		if edge.requires=="cells": unlocked = world.player.max_ammo>=2
+		draw_line(pa,pb,MINT if unlocked else Color("b69c70"),2)
+		if not unlocked:
+			draw_circle((pa+pb)/2,3,Color("d9b580"))
+	for room: Dictionary in world.campaign.rooms:
+		var id: int = room.id
+		var p := base+Vector2((id-1)%5,(id-1)/5)*cell
+		var known: bool = world.rooms.discovered.has(id)
+		var seen := known
+		for edge: Dictionary in world.campaign.edges:
+			if edge.seen and (edge.a==id or edge.b==id): seen = true
+		if not seen: continue
+		draw_rect(Rect2(p,Vector2(88,36)),Color("244b50") if known else Color("132c37"))
+		draw_rect(Rect2(p,Vector2(88,36)),MINT if known else Color("446069"),false,1)
+		if known:
+			text(p+Vector2(5,14),"Observatory" if id==10 else room.name,9)
+			for item: Dictionary in world.pickups:
+				if item.get("room",0)==id:
+					draw_circle(p+Vector2(73,27),2,Color("5e7974") if item.taken else Color("efc784"))
+			for checkpoint: Vector2 in world.checkpoints:
+				if CampaignLayout.room_at(checkpoint)==id:
+					draw_rect(Rect2(p+Vector2(7,24),Vector2(4,4)),MINT)
+		if world.rooms.active_room.get("id",0)==id:
+			var local: Vector2 = (world.player.position-room.origin)/CampaignLayout.CELL
+			draw_circle(p+local*Vector2(88,36),3,Color("fff1bf"))
+	text(Vector2(44,318),"MINT  explored    GOLD  obstacle / salvage    SQUARE  anchor",10,MINT)
+	text(Vector2(374,318),"PUMP %s   CORE %s" % ["ON" if world.locks.get("pump",false) else "--","ON" if world.locks.get("core",false) else "--"],10)

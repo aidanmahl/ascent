@@ -537,15 +537,8 @@ static func _update_dash(state: MovementState, config: MovementConfig) -> bool:
 			return false
 
 		state.dash_direction = _dash_direction(state)
-		var launch := state.dash_direction * config.dash_speed
-		# Rule 4b: diagonal (nonzero x) upward dashes get their Y component
-		# boosted to compensate for gravity now applying throughout the
-		# dash (4a) - they'd otherwise fall short of their old reach.
-		# Straight-up dashes (zero x) are NOT boosted: "they were too
-		# strong already; gravity applying is the correction."
-		if state.dash_direction.x != 0.0 and state.dash_direction.y < 0.0:
-			launch.y *= config.dash_diagonal_up_vertical_boost
-		state.velocity = launch
+		# Horizontal impulse preserves jump/fall velocity. Aim never steers dash.
+		state.velocity.x = state.dash_direction.x * config.dash_speed
 		state.dash_available = false
 		dash_timer = config.dash_duration_frames
 		just_started = true
@@ -565,21 +558,10 @@ static func _update_dash(state: MovementState, config: MovementConfig) -> bool:
 	state.timers["dash_cooldown"] = dash_cooldown
 	return just_started
 
-## 8-way snap from held move/look directions; neutral input dashes in the
-## current facing direction instead.
+## Horizontal movement input wins; vertical input and mouse aim are irrelevant.
 static func _dash_direction(state: MovementState) -> Vector2:
-	var dir := Vector2.ZERO
-	if state.move_left:
-		dir.x -= 1.0
-	if state.move_right:
-		dir.x += 1.0
-	if state.look_up:
-		dir.y -= 1.0
-	if state.look_down:
-		dir.y += 1.0
-	if dir == Vector2.ZERO:
-		dir.x = state.facing
-	return dir.normalized()
+	var horizontal := int(state.move_right) - int(state.move_left)
+	return Vector2(float(horizontal) if horizontal != 0 else state.facing, 0)
 
 ## Double jump and dash both refill on ground OR wall contact per SPEC.md
 ## section 4, using this frame's freshly-resolved collision flags (unlike

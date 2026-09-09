@@ -1,36 +1,68 @@
-# Ascent: recoil expedition design
+﻿# Orbital Garden — runtime design
 
-This is the current playable design, superseding the older movement gym specification and the first First Light build.
+The authoritative spatial ledger is `CampaignLayout.LINKS`, with 25 cell-aligned
+room bounds. Every opening is a real shared edge. Player coordinates, velocity,
+dash state and ammo stay continuous when room membership changes. The old shaft,
+remote boss rooms and optional-room teleport code exist only in the legacy test
+fixture. Custom nonempty layouts use an isolated authoring path.
 
-## Movement and combat rules
+## Movement and progression
 
-- Three health. Damage grants 1.3 seconds of protection. Twelve signal anchors restore health and bound retries; falling far below the latest anchor also recovers the astronaut.
-- No double jump. The old optional movement-core branch remains solely for regression compatibility; the live player permanently disables it.
-- The cutter is found after five ordinary-jump landings, not beside the ship. Its magazine progresses from one to two to three cells.
-- Downward fire adds recoil and arrests a fall. Fire cooldown is 0.19 seconds. Landing refills ammo, dash, and the wall-kick charge; touching a wall refills none of them.
-- Magnetic boots are earned, not available at spawn. One wall kick per landing; vertical launch is 3.8�4.3 pixels per physics step, down from 6�6.5. No zero-gravity cling. The player retains air control.
-- The vector thruster enables directional dashes and passes blue membranes. Membranes are solid to ordinary movement: taking damage cannot bypass the gate.
-- Drifters hover on fixed sine paths and fire a three-shot, 20-degree spread every 1.65 seconds in range. Bullets aim once, travel at a constant 76 pixels/second, and never home. Guardian fans travel at 66 pixels/second and occasional radial volleys at 54. Wind-up rings telegraph shots.
-- Friendly pulses destroy hostile projectiles. Combat and traversal share the magazine, so the player must choose whether to spend airborne shots on lift, defense, or damage.
+Live dash: horizontal impulse at 10.5 px/frame, 16-frame nominal window, six-frame
+cooldown. W/S and mouse aim cannot steer it. Vertical velocity and normal gravity
+are preserved. Measured ordinary jump + horizontal dash (frame 10 launch) travels
+235.9 px versus 83.7 px in the previous live build. This is a fixed input schedule,
+not a universal maximum. Recoil jumps retain their existing rise and cadence.
 
-## Progression
+Boots now launch away at (3.6, -5.8), neutral at (2.8, -5.4), and toward at
+(2.2, -4.8), once per landing. This supports the new kick wells without increasing
+ordinary jump height. Natural gates use actual terrain; traversal tests simulate
+the collision and also try pre-upgrade input combinations.
 
-| Region | Challenge / reward | What it teaches or requires |
+| Find / objective | Place | Effect |
 | --- | --- | --- |
-| Salvage Trail | Narrow climbing ledges to the lost pulse cutter | Ordinary jumping and variable jump height before introducing recoil |
-| Warden's Hollow | 96-pixel recoil shafts; defeat the Hollow Warden for cell two | Gun-required ascent and shooting down hostile spreads |
-| Relay Mines | Fire at two relays within five seconds across a stone divider; claim kick boots | Reposition using recoil, then perform the finite wall transfer |
-| Glass Sanctuary | Defeat the Glass Sentinel for the vector thruster | Dash through a membrane, then steer onto a separate landing |
-| Rootheart | Defeat Rootheart for cell three; shoot the core three times in one flight | Full magazine management; grounded shots and partial flights do not unlock the core |
-| Storm Canopy | Tall, offset ledges, another membrane, geysers and Drifters | Chain recoil, dash and limited wall recovery while managing incoming fire |
-| The Crown | Final guardian, sealed roof, rescue transmitter | Final combat checkpoint and chapter completion |
+| Cutter | Wreck Orchard | One recoil cell |
+| Boots | Boot Nest, below and west of the start | One airborne wall kick |
+| Thruster | Sail Garden | Long horizontal dash |
+| Second cell | Wind Harp | Higher recoil routes |
+| Core | Heartwood's upper nest | Half of the restored wind network |
+| Pump | Sluice Engine, beyond Rootheart | Lake lift; other half of wind network |
+| Third cell | Optional Sentinel | Additional recoil reach |
+| Suit fragments | Moss Roost and Cistern Lanterns | Both together add one integrity |
+| Final bridge | Crown victory | Physical route into Beacon |
 
-The route climbs from y=480 to y=-4048 (43 authored route connections), over twice the previous chapter's vertical distance. Combat detours, partitions, stone diaphragms, hazard strips, and timed vents interrupt the ascent. Upgrades appear as caged guns, magazines, boots and thrusters; equipping them visibly changes the astronaut's weapon cells, soles, backpack and exhaust. Recoil and wall kicks have separate brief animations.
+The Crown/Launch Bough connection admits the eastern approach once wind is
+restored; the Beacon bridge remains Crown-locked. This supports both arena
+entrances without allowing a summit bypass. Arena seals are local machinery.
+Warden's optional alcove permits retreat and resets that unfinished encounter.
 
-## Verification and limits
+The western return ladder and eastern counterweight open permanently from their
+far sides. Pickups and cleared bosses stay cleared on death. Resting selects any
+visited anchor; checkpoint order is not a progression condition. Normal traversal
+neither heals nor changes the selected anchor. Boss retry points are outside combat.
 
-The expedition suite searches every route connection with the equipment available at that stage using the actual movement/collision implementation. Negative checks verify that the first recoil shaft, second-cell shaft, wall transfer and membrane cannot be crossed by the search policies without their intended abilities. These are practical traversal checks, not a proof against every possible speedrunning technique.
+## Rendering and state
 
-Integration checks cover projectile cancellation and constant velocity, airborne core completion using actual weapon travel/recoil, relay expiry, single-use kicks, locked cages, boss recovery, and lethal-volley cleanup. The 55 historical movement tests also remain in place.
+Rooms occupy a 3200 × 2400 plane, divided into 640 × 480 footprints. Scenery culls
+in both axes. The camera follows the player with horizontal lookahead and a
+visibility clamp; it does not center a large remote room while losing the player.
+The player draws above environmental art. Terrain lips identify physical surfaces;
+large background silhouettes remain behind collision and the character.
 
-Progress persists for the current session. Desktop keyboard/mouse controls remain the target. Hazard cycles and enemy fire introduce timing requirements beyond the geometry search; screenshots check the actual rendered rooms and equipment.
+The map is generated from the same room and connection data. It distinguishes
+visited rooms, glimpsed neighbors, obstacles, pickups and anchors. E only rests
+at nearby anchors or transmits the final signal. Automatic shared-edge discovery
+is not a position-changing transition.
+
+Lifts are physical platforms in authored shafts. Their motion supports the player
+without resetting momentum or moving them to a distant location. Closed machinery
+uses the shared swept gate collision helper. Wind needs both core and pump, and
+survives death. No fluid simulation, swimming or player flight was added.
+
+## Validation limits
+
+Movement traces and structural checks establish traversability for the tested
+input schedules. The route-search harness explicitly separates traversal from
+boss combat: its guardian-defeat events are harness damage, not a balance claim.
+Rendered captures verify the real viewport and are inspected separately. These
+checks complement playtesting; they do not measure whether every room is fun.

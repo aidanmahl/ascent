@@ -48,7 +48,7 @@ func _register_tests(runner: TestRunner) -> void:
 	runner.register("double_jump_available_once_per_airborne_period", _test_double_jump_available_once_per_airborne_period)
 	runner.register("dash_direction_snapping", _test_dash_direction_snapping)
 	runner.register("dash_no_discontinuity_crossing_nominal_duration_boundary", _test_dash_no_discontinuity_crossing_nominal_duration_boundary)
-	runner.register("dash_diagonal_up_boosted_but_straight_up_is_not", _test_dash_diagonal_up_boosted_but_straight_up_is_not)
+	runner.register("dash_preserves_vertical_velocity", _test_dash_preserves_vertical_velocity)
 	runner.register("dash_cancels_on_wall_contact_and_refills", _test_dash_cancels_on_wall_contact_and_refills)
 	runner.register("dash_cooldown_blocks_second_dash_for_exactly_6_frames", _test_dash_cooldown_blocks_second_dash)
 	runner.register("wall_cling_no_freeze_while_rising", _test_wall_cling_no_freeze_while_rising)
@@ -624,11 +624,11 @@ func _test_dash_direction_snapping() -> String:
 	s2.dash_available = true
 	var f2: Array[Dictionary] = [{"dash_pressed": true, "move_right": true, "look_up": true}]
 	var h2 := InputPlayback.run(s2, config, f2, PlayerMovement.process)
-	var diag: float = sqrt(0.5)
+	var diag: float = 1.0
 	failure = Expect.approx(h2[0].dash_direction.x, diag, "diagonal (right+up) dash x")
 	if failure != "":
 		return failure
-	failure = Expect.approx(h2[0].dash_direction.y, -diag, "diagonal (right+up) dash y")
+	failure = Expect.approx(h2[0].dash_direction.y, 0.0, "diagonal (right+up) dash y")
 	if failure != "":
 		return failure
 
@@ -660,34 +660,22 @@ func _test_dash_no_discontinuity_crossing_nominal_duration_boundary() -> String:
 	var delta := absf(history[boundary + 1].velocity.x - history[boundary].velocity.x)
 	return Expect.is_true(delta <= max_expected_delta, "vx crossing the dash's nominal-duration boundary (frame %d -> %d) should change by at most one frame's worth of normal air friction (delta %s, max expected %s) - no scripted exit event left to snap at" % [boundary, boundary + 1, delta, max_expected_delta])
 
-## Movement feel overhaul, rule 4b: diagonal (nonzero x) upward dashes get
-## their Y component boosted via dash_diagonal_up_vertical_boost, to
-## compensate for gravity now applying throughout the dash (4a) - straight-
-## up dashes (zero x) do NOT get this boost ("they were too strong
-## already; gravity applying is the correction"). Replaces the old
-## upward-exit-retention test, which asserted a mechanism (dash_exit_
-## retention_vertical) this rule removed outright. Checks vy only - the
-## boost is Y-only by design (4a's dash-speed invariant governs vx
-## separately, unaffected by this).
-func _test_dash_diagonal_up_boosted_but_straight_up_is_not() -> String:
+## Dash must not add lift or cancel falling, for any look input.
+func _test_dash_preserves_vertical_velocity() -> String:
 	var config := _default_config()
-
-	var diag_state := MovementState.new()
-	diag_state.dash_available = true
-	var diag_frames: Array[Dictionary] = [{"dash_pressed": true, "move_right": true, "look_up": true}]
-	var diag_history := InputPlayback.run(diag_state, config, diag_frames, PlayerMovement.process)
-	var diag: float = sqrt(0.5)
-	var expected_diag_vy := -config.dash_speed * diag * config.dash_diagonal_up_vertical_boost + config.gravity
-	var failure := Expect.approx(diag_history[0].velocity.y, expected_diag_vy, "diagonal upward dash's vy should be boosted by dash_diagonal_up_vertical_boost (plus one frame of gravity already applied)")
-	if failure != "":
-		return failure
-
-	var straight_state := MovementState.new()
-	straight_state.dash_available = true
-	var straight_frames: Array[Dictionary] = [{"dash_pressed": true, "look_up": true}]
-	var straight_history := InputPlayback.run(straight_state, config, straight_frames, PlayerMovement.process)
-	var expected_straight_vy := -config.dash_speed + config.gravity
-	return Expect.approx(straight_history[0].velocity.y, expected_straight_vy, "straight-up dash's vy should NOT be boosted (plus one frame of gravity already applied) - gravity applying throughout is its correction, not something to compensate for")
+	for vy in [-3.0, 3.0]:
+		for look in ["look_up", "look_down"]:
+			var state := MovementState.new()
+			state.velocity.y = vy
+			state.dash_available = true
+			var input := {"dash_pressed":true, "move_right":true}
+			input[look] = true
+			var frames: Array[Dictionary] = [input]
+			var history := InputPlayback.run(state, config, frames, PlayerMovement.process)
+			var failure := Expect.approx(history[0].velocity.y, vy + config.gravity, "dash preserves vertical motion under normal gravity")
+			if failure != "":
+				return failure
+	return ""
 
 func _test_dash_cancels_on_wall_contact_and_refills() -> String:
 	var config := _default_config()

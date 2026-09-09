@@ -48,9 +48,9 @@ if ($missing.Count -gt 0) {
 }
 
 # GitHub Pages and browsers cache the generated `index.pck` by filename. Add
-# the commit revision to the main-pack URL so a new deployment cannot keep
+# the actual pack hash to the main-pack URL so an uncommitted local build cannot keep
 # launching the previous chapter from a stale cache.
-$revision = (git rev-parse --short HEAD).Trim()
+$revision = (Get-FileHash -LiteralPath $pckPath -Algorithm SHA256).Hash.Substring(0,12).ToLowerInvariant()
 $html = Get-Content $indexPath -Raw
 $html = $html.Replace('"executable":"index"', '"executable":"index","mainPack":"index.pck?v=' + $revision + '"')
 Set-Content $indexPath $html
